@@ -1,77 +1,144 @@
-# GenAI LLM Chatbot
+<div align="center">
 
-A web-based AI chatbot built with Flask and the Groq API, featuring a clean chat interface with real-time streaming responses and multiple productivity tools.
+# ✦ GenAI LLM Chatbot
 
-## Features
+**A sleek, feature-rich AI chatbot powered by Groq & Flask**
 
-### Core Chat
-- **Real-time streaming** — AI responses appear word by word, no waiting
-- **Multiple AI models** — Switch between 4 models mid-conversation:
-  - Llama 3.3 70B (most powerful)
-  - Llama 3.1 8B (fastest)
-  - Mixtral 8x7B (long context)
-  - Gemma 2 9B (Google)
-- **Conversation history** — All chats saved locally; resume any time
-- **Rename / delete conversations** — Manage your chat history from the sidebar
-- **Regenerate response** — Re-generate the last AI reply with one click
-- **Custom system prompt** — Set a persona or instructions for the AI
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Flask](https://img.shields.io/badge/Flask-3.x-000000?style=for-the-badge&logo=flask&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq-API-F55036?style=for-the-badge&logo=groq&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)
 
-### Productivity Tools
-- **5 chat modes** — Chat / Code / Write / Analyze / Translate, each with a preset system prompt
-- **Prompt Library** — Built-in collection of useful prompts (Ctrl+P)
-- **Diagram generator** — Ask AI to generate Mermaid diagrams (flowchart, sequence, ER, class, state, Gantt)
-- **HTML preview** — Live render AI-generated HTML/CSS/JS in a side panel
-- **Notes workspace** — Side panel for taking notes while chatting (Ctrl+E)
-- **Export conversation** — Download chat history as a file
-- **Voice input** — Speak your message (Chinese supported)
+</div>
 
-### UI / UX
-- **Dark / Light mode** toggle
-- **Conversation search** — Filter sidebar history by keyword (Ctrl+/)
-- **Markdown rendering** — Bold, italic, lists, tables, code blocks
-- **Syntax highlighting** — Code blocks highlighted via highlight.js
-- **Math rendering** — LaTeX equations rendered via KaTeX
-- **Character counter** — Live count of input length
-- **Keyboard shortcuts** — Ctrl+N (new chat), Ctrl+E (notes), Ctrl+P (prompt library), Ctrl+, (settings)
+---
 
-## Tech Stack
+## 🤖 Available Models
 
-- **Backend**: Python, Flask
-- **AI API**: [Groq](https://groq.com/) (free tier)
-- **Frontend**: HTML, CSS, Vanilla JavaScript
-- **Libraries**: marked.js (Markdown), highlight.js (syntax), KaTeX (math), Mermaid (diagrams)
+| Model | Speed | Context | Best For |
+|-------|-------|---------|----------|
+| 🥇 Llama 3.3 70B | ⚡⚡ | 128k | General use — most capable |
+| 🚀 Llama 3.1 8B  | ⚡⚡⚡⚡ | 128k | Quick answers, low latency |
+| 📖 Mixtral 8x7B  | ⚡⚡⚡ | 32k | Long documents |
+| 🔵 Gemma 2 9B    | ⚡⚡⚡ | 8k | Google's model |
 
-## Setup
+---
 
-### 1. Clone the repository
+## ✨ Features
+
+### 💬 Chat
+- **Real-time streaming** — responses appear word by word
+- **Conversation history** — saved locally, resume any time
+- **Rename / delete** conversations from the sidebar
+- **Regenerate** the last AI reply with one click
+- **Custom system prompt** — give the AI a persona or instructions
+- **Voice input** — speak your message (Chinese supported)
+
+### 🛠️ Productivity
+- **5 Chat modes** — 💬 Chat / 💻 Code / 📝 Write / 🔍 Analyze / 🌐 Translate
+- **Prompt Library** — built-in collection of useful prompts `Ctrl+P`
+- **Diagram generator** — AI-generated Mermaid diagrams
+
+  > Flowchart · Sequence · ER · Class · State · Gantt
+
+- **HTML preview** — live render AI-generated webpages in a side panel
+- **Notes workspace** — take notes while chatting `Ctrl+E`
+- **Export conversation** — download your chat history
+
+### 🎨 UI / UX
+- 🌙 **Dark / Light mode** toggle
+- 🔍 **Conversation search** `Ctrl+/`
+- **Markdown rendering** — bold, italic, tables, code blocks
+- **Syntax highlighting** via highlight.js
+- **Math equations** via KaTeX (`$E=mc^2$` just works)
+- **Keyboard shortcuts** throughout the app
+
+<details>
+<summary>⌨️ Keyboard Shortcuts</summary>
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl + N` | New conversation |
+| `Ctrl + E` | Open notes workspace |
+| `Ctrl + P` | Open prompt library |
+| `Ctrl + ,` | Open settings |
+| `Ctrl + /` | Search conversations |
+| `Enter` | Send message |
+| `Shift + Enter` | New line |
+
+</details>
+
+---
+
+## 🚀 Quick Start
+
+### 1. Clone
 
 ```bash
 git clone https://github.com/justin999-tech/GenAI_LLM1.git
 cd GenAI_LLM1
 ```
 
-### 2. Create a virtual environment and install dependencies
+### 2. Install dependencies
 
 ```bash
 python -m venv venv
-venv\Scripts\activate      # Windows
+venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 ```
 
-### 3. Set up your API key
+### 3. Set your API key
 
-Create a `.env` file in the project root:
+Create a `.env` file:
 
-```
+```env
 GROQ_API_KEY=your_api_key_here
 ```
 
-Get a free API key at [console.groq.com](https://console.groq.com/)
+> Get a **free** API key at [console.groq.com](https://console.groq.com/) — no credit card required.
 
-### 4. Run the app
+### 4. Run
 
 ```bash
 python app.py
 ```
 
-Open your browser and go to `http://127.0.0.1:5000`
+Open `http://127.0.0.1:5000` in your browser.
+
+---
+
+## 🗂️ Project Structure
+
+```
+GenAI_LLM1/
+├── app.py              # Flask routes & API endpoints
+├── chatbot.py          # Groq client & chat logic
+├── requirements.txt    # Python dependencies
+├── .env                # API key (not committed)
+├── templates/
+│   └── index.html      # Frontend UI
+└── static/
+    └── style.css       # Styles
+```
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend | Python · Flask |
+| AI | Groq API (LPU inference) |
+| Frontend | HTML · CSS · Vanilla JS |
+| Markdown | marked.js |
+| Syntax highlight | highlight.js |
+| Math | KaTeX |
+| Diagrams | Mermaid.js |
+
+---
+
+<div align="center">
+
+Made with ❤️ · MIT License
+
+</div>
