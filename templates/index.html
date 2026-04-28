@@ -146,18 +146,18 @@
         <div class="input-area">
             <div class="input-wrapper" id="input-wrapper">
                 <!-- Image preview strip (shown when image attached) -->
-                <div id="image-preview-strip" style="display:none; padding:8px 12px; border-bottom:1px solid var(--border-color, #e5e7eb); align-items:center; gap:10px; background:var(--bg-secondary, #f9fafb)">
-                    <img id="image-preview-thumb" style="max-height:64px; max-width:96px; border-radius:6px; object-fit:cover; border:1px solid var(--border-color, #e5e7eb)" />
-                    <span id="image-filename" style="font-size:12px; opacity:0.75; flex:1"></span>
-                    <button onclick="clearImage()" title="移除圖片" style="background:none; border:none; cursor:pointer; font-size:16px; opacity:0.6">✕</button>
+                <div id="image-preview-strip" style="display:none; padding:10px 14px; border-bottom:1px solid var(--border); align-items:center; gap:10px; background:rgba(255,255,255,0.06);">
+                    <img id="image-preview-thumb" style="max-height:64px; max-width:96px; border-radius:8px; object-fit:cover; border:1px solid var(--border);" />
+                    <span id="image-filename" style="font-size:12px; color:var(--text2); flex:1"></span>
+                    <button onclick="clearImage()" title="移除圖片" style="background:none; border:none; cursor:pointer; font-size:16px; color:var(--text2)">✕</button>
                 </div>
                 <!-- Notion working-page strip (shown when a page is selected) -->
-                <div id="notion-page-strip" style="display:none; padding:6px 12px; border-bottom:1px solid var(--border-color,#e5e7eb); align-items:center; gap:8px; background:rgba(99,102,241,0.05); font-size:12px;">
+                <div id="notion-page-strip" style="display:none; padding:8px 14px; border-bottom:1px solid var(--border); align-items:center; gap:8px; background:rgba(255,255,255,0.06); font-size:12px; color:var(--text);">
                     <span>📓</span>
-                    <span style="opacity:0.6">綁定 Notion 頁面：</span>
-                    <strong id="notion-page-title" style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis"></strong>
-                    <a id="notion-page-link" href="#" target="_blank" style="font-size:11px; opacity:0.6; text-decoration:none">在 Notion 開啟 ↗</a>
-                    <button onclick="clearNotionPage()" title="解除綁定" style="background:none; border:none; cursor:pointer; font-size:14px; opacity:0.5">✕</button>
+                    <span style="color:var(--text2)">綁定 Notion 頁面：</span>
+                    <strong id="notion-page-title" style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text)"></strong>
+                    <a id="notion-page-link" href="#" target="_blank" style="font-size:11px; color:var(--text2); text-decoration:none">在 Notion 開啟 ↗</a>
+                    <button onclick="clearNotionPage()" title="解除綁定" style="background:none; border:none; cursor:pointer; font-size:14px; color:var(--text2)">✕</button>
                 </div>
                 <div class="input-box">
                     <textarea
