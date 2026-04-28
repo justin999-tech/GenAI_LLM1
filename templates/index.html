@@ -367,6 +367,14 @@
                     </select>
                 </div>
                 <div class="setting-group">
+                    <label>介面風格</label>
+                    <span class="setting-hint">Vision Pro 玻璃感（預設）／Hologram 鋼鐵人 HUD 風</span>
+                    <div class="pill-group" id="ui-style-pills">
+                        <button class="pill active" data-value="visionpro" onclick="setUiStyle('visionpro',true)">🌫 Vision Pro</button>
+                        <button class="pill"        data-value="hologram"  onclick="setUiStyle('hologram',true)">🌐 Hologram</button>
+                    </div>
+                </div>
+                <div class="setting-group">
                     <label>✨ 粒子特效</label>
                     <span class="setting-hint">送訊息時文字碎成粒子飛散；AI 開始回覆時粒子凝聚成回答。預設關閉。</span>
                     <div class="pill-group" id="fx-particles-pills">
@@ -600,6 +608,24 @@ function setParticleFx(on, save = true) {
 function applyParticleFxFromStorage() {
     const on = localStorage.getItem("fx_particles") === "1";
     setParticleFx(on, false);
+}
+
+// ── UI style theme (Vision Pro / Hologram) ─────────────────────
+function setUiStyle(style, save = true) {
+    // Drop any previous theme- class, apply the chosen one
+    document.body.classList.remove("theme-visionpro", "theme-hologram");
+    if (style === "hologram") document.body.classList.add("theme-hologram");
+    document.querySelectorAll("#ui-style-pills .pill").forEach(p => {
+        p.classList.toggle("active", p.dataset.value === style);
+    });
+    if (save) {
+        localStorage.setItem("ui_style", style);
+        showToast(style === "hologram" ? "🌐 Hologram 主題已套用" : "🌫 Vision Pro 主題已套用");
+    }
+}
+function applyUiStyleFromStorage() {
+    const s = localStorage.getItem("ui_style") || "visionpro";
+    setUiStyle(s, false);
 }
 
 // ── Dark mode ────────────────────────────────────────────────────
@@ -870,6 +896,7 @@ marked.use({
     initModeSwitcher();
     initColorSwatches();
     applyParticleFxFromStorage();
+    applyUiStyleFromStorage();
     await loadModels();
     await loadConversations();
     document.getElementById("messages").addEventListener("scroll", onMessagesScroll);
