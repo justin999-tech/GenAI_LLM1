@@ -16,6 +16,12 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
+
+# Ensure .env (NOTION_TOKEN, GROQ_API_KEY, ...) is loaded even when the
+# server is spawned as a fresh subprocess by the MCP client.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp import types

@@ -99,11 +99,6 @@
                         <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
                     </svg>
                 </a>
-                <button class="icon-btn" onclick="toggleReasoningPanel()" title="思考過程面板" id="reasoning-toggle-btn">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-                    </svg>
-                </button>
                 <button class="icon-btn" onclick="openStudio()" title="筆記工作區 (Ctrl+E)">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
@@ -156,6 +151,14 @@
                     <span id="image-filename" style="font-size:12px; opacity:0.75; flex:1"></span>
                     <button onclick="clearImage()" title="移除圖片" style="background:none; border:none; cursor:pointer; font-size:16px; opacity:0.6">✕</button>
                 </div>
+                <!-- Notion working-page strip (shown when a page is selected) -->
+                <div id="notion-page-strip" style="display:none; padding:6px 12px; border-bottom:1px solid var(--border-color,#e5e7eb); align-items:center; gap:8px; background:rgba(99,102,241,0.05); font-size:12px;">
+                    <span>📓</span>
+                    <span style="opacity:0.6">綁定 Notion 頁面：</span>
+                    <strong id="notion-page-title" style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis"></strong>
+                    <a id="notion-page-link" href="#" target="_blank" style="font-size:11px; opacity:0.6; text-decoration:none">在 Notion 開啟 ↗</a>
+                    <button onclick="clearNotionPage()" title="解除綁定" style="background:none; border:none; cursor:pointer; font-size:14px; opacity:0.5">✕</button>
+                </div>
                 <div class="input-box">
                     <textarea
                         id="user-input"
@@ -206,6 +209,7 @@
                         <label class="footer-btn" for="image-upload" title="上傳圖片給 AI 分析（Vision）" style="cursor:pointer">📷 圖片</label>
                         <input type="file" id="image-upload" accept="image/*" style="display:none" onchange="handleImageUpload(event)">
                         <button class="footer-btn" onclick="openMemoryManager()" title="長期記憶管理 (Ctrl+M)">🧠 記憶</button>
+                        <button class="footer-btn" onclick="openNotionPicker()" title="選擇 Notion 工作頁面" id="notion-picker-btn">📓 Notion</button>
                         <button class="footer-btn" onclick="openToolsPanel()" title="工具測試 (23 個 MCP 工具)">🔧 工具</button>
                         <button class="footer-btn" onclick="openProviderManager()" title="自訂 API 提供者">🔑 API</button>
                     </div>
@@ -214,16 +218,6 @@
             </div>
         </div>
     </main>
-
-    <!-- ── Reasoning Panel (Agent thinking steps) ─────────── -->
-    <div id="reasoning-panel" style="display:none;flex-direction:column;width:300px;background:var(--bg-primary,#fff);border-left:1px solid var(--border-color,rgba(99,102,241,0.18));padding:14px;overflow-y:auto;flex-shrink:0">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <h3 style="margin:0;font-size:14px;font-weight:600">🧠 思考過程</h3>
-            <button onclick="toggleReasoningPanel()" style="background:none;border:none;font-size:16px;cursor:pointer;opacity:0.6">✕</button>
-        </div>
-        <div style="font-size:11px;color:var(--text-muted, #94a3b8);margin-bottom:10px">AI agent 的決策步驟即時顯示</div>
-        <div id="reasoning-steps" style="flex:1;overflow-y:auto"></div>
-    </div>
 
     <!-- ── Artifact Panel ──────────────────────────────────── -->
     <div class="artifact-panel" id="artifact-panel">
@@ -958,7 +952,10 @@ async function loadConversation(convId) {
     if (conv.system_prompt !== undefined) currentSysPrompt = conv.system_prompt;
     const messages = document.getElementById("messages");
     messages.innerHTML = "";
-    conv.messages.forEach(msg => addMessage(msg.role, msg.content, false));
+    conv.messages.forEach(msg => addMessage(msg.role, msg.content, false, null, {
+        images:    msg.images,
+        image_url: msg.image_url,
+    }));
     messages.scrollTop = messages.scrollHeight;
     document.getElementById("conv-header-title").textContent = conv.title || "對話";
     document.title = (conv.title || "對話") + " — AI Assistant";
@@ -1047,7 +1044,7 @@ function buildActionsHTML(role) {
     </div>`;
 }
 
-function addMessage(role, content, scroll = true, time = null) {
+function addMessage(role, content, scroll = true, time = null, extras = null) {
     const messages = document.getElementById("messages");
     const welcome  = messages.querySelector(".welcome");
     if (welcome) welcome.remove();
@@ -1063,6 +1060,25 @@ function addMessage(role, content, scroll = true, time = null) {
             ${buildActionsHTML(role)}
         </div>${timeHTML}`;
         div.querySelector(".bubble").dataset.raw = content;
+        // Restore tool-generated images saved with this assistant message.
+        const imgs = extras?.images || [];
+        if (imgs.length) {
+            const wrap = div.querySelector(".msg-content");
+            const gallery = document.createElement("div");
+            gallery.className = "tool-image-gallery";
+            gallery.style.cssText = "display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 10px;";
+            for (const url of imgs) {
+                const img = document.createElement("img");
+                img.src = url;
+                img.dataset.src = url;
+                img.className = "generated-image";
+                img.style.cssText = "max-width:100%; max-height:640px; border-radius:8px; cursor:pointer; border:1px solid var(--border-color, rgba(99,102,241,0.3)); object-fit:contain;";
+                img.title = "點擊以原始尺寸開啟";
+                img.onclick = () => window.open(url, "_blank");
+                gallery.appendChild(img);
+            }
+            wrap.insertBefore(gallery, wrap.firstChild);
+        }
         renderMath(div.querySelector(".bubble"));
         renderMermaidDiagrams(div);
         fixCodeLangs(div);
@@ -1072,6 +1088,16 @@ function addMessage(role, content, scroll = true, time = null) {
             ${buildActionsHTML(role)}
         </div>${avatarHTML}`;
         div.querySelector(".bubble").dataset.raw = content;
+        // Restore an attached user image (from a past Vision turn).
+        const userImg = extras?.image_url;
+        if (userImg) {
+            const bubble = div.querySelector(".bubble");
+            const img = document.createElement("img");
+            img.src = userImg;
+            img.style.cssText = "max-height:160px; max-width:240px; border-radius:8px; margin-bottom:6px; display:block; cursor:pointer";
+            img.onclick = () => window.open(userImg, "_blank");
+            bubble.insertBefore(img, bubble.firstChild);
+        }
     }
     messages.appendChild(div);
     if (scroll) messages.scrollTop = messages.scrollHeight;
@@ -1172,7 +1198,6 @@ async function sendMessage() {
     const nowTime = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
     addMessage("user", message, true, nowTime);
     setLoading(true); isStreaming = true;
-    if (typeof clearReasoningSteps === "function") clearReasoningSteps();
 
     const messages  = document.getElementById("messages");
     const streamDiv = document.createElement("div");
@@ -1193,6 +1218,10 @@ async function sendMessage() {
             message: apiMessage, conversation_id: currentConvId,
             model: currentModel, system_prompt: currentSysPrompt,
         };
+        if (currentNotionPageId) {
+            reqBody.notion_page_id    = currentNotionPageId;
+            reqBody.notion_page_title = currentNotionPageTitle;
+        }
         if (currentImageData) {
             reqBody.image_data = currentImageData;
             reqBody.image_type = currentImageType;
@@ -1231,7 +1260,7 @@ async function sendMessage() {
                         renderMemoryBadge(streamDiv);
                     }
                     if (data.type === "reasoning") {
-                        pushReasoningStep(data.step || "");
+                        pushReasoningStep(streamDiv, data.step || "");
                     }
                     if (data.type === "tool_call") {
                         if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
@@ -1898,41 +1927,191 @@ let currentImageData = null;   // base64 (no data: prefix)
 let currentImageType = null;   // mime type
 let currentImageName = null;
 
-// ── Reasoning panel state ───────────────────────────────────────
-let reasoningPanelOpen = localStorage.getItem("reasoning_open") === "1";
+// ── Notion picker state ─────────────────────────────────────────
+let currentNotionPageId    = localStorage.getItem("notion_page_id")    || null;
+let currentNotionPageTitle = localStorage.getItem("notion_page_title") || null;
+let currentNotionPageUrl   = localStorage.getItem("notion_page_url")   || null;
+// Apply saved selection on load
+setTimeout(() => updateNotionStrip(), 50);
 
-// Apply saved state on load
-setTimeout(() => {
-    const panel = document.getElementById("reasoning-panel");
-    if (panel) panel.style.display = reasoningPanelOpen ? "flex" : "none";
-}, 100);
-
-function toggleReasoningPanel() {
-    reasoningPanelOpen = !reasoningPanelOpen;
-    localStorage.setItem("reasoning_open", reasoningPanelOpen ? "1" : "0");
-    document.getElementById("reasoning-panel").style.display = reasoningPanelOpen ? "flex" : "none";
+function updateNotionStrip() {
+    const strip = document.getElementById("notion-page-strip");
+    const btn   = document.getElementById("notion-picker-btn");
+    if (!strip) return;
+    if (currentNotionPageId && currentNotionPageTitle) {
+        strip.style.display = "flex";
+        document.getElementById("notion-page-title").textContent = currentNotionPageTitle;
+        const a = document.getElementById("notion-page-link");
+        a.href = currentNotionPageUrl || "#";
+        a.style.display = currentNotionPageUrl ? "inline" : "none";
+        if (btn) btn.textContent = "📓 " + (currentNotionPageTitle.length > 12
+            ? currentNotionPageTitle.slice(0, 12) + "…"
+            : currentNotionPageTitle);
+    } else {
+        strip.style.display = "none";
+        if (btn) btn.textContent = "📓 Notion";
+    }
 }
 
-function pushReasoningStep(text) {
-    const panel = document.getElementById("reasoning-steps");
-    if (!panel) return;
-    const time = new Date().toLocaleTimeString("zh-TW", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+function clearNotionPage() {
+    currentNotionPageId = currentNotionPageTitle = currentNotionPageUrl = null;
+    localStorage.removeItem("notion_page_id");
+    localStorage.removeItem("notion_page_title");
+    localStorage.removeItem("notion_page_url");
+    updateNotionStrip();
+    showToast("已解除 Notion 綁定");
+}
+
+function pickNotionPage(id, title, url) {
+    currentNotionPageId    = id;
+    currentNotionPageTitle = title;
+    currentNotionPageUrl   = url;
+    localStorage.setItem("notion_page_id", id);
+    localStorage.setItem("notion_page_title", title);
+    if (url) localStorage.setItem("notion_page_url", url);
+    updateNotionStrip();
+    closeNotionPicker();
+    showToast(`📓 已綁定：${title}`);
+}
+
+async function openNotionPicker() {
+    let modal = document.getElementById("notion-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "notion-modal";
+        modal.style.cssText = "position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center;";
+        modal.innerHTML = `
+            <div style="background:var(--bg-primary,#fff); border-radius:14px; padding:22px; width:min(640px,92vw); max-height:80vh; display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,0.18);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <h3 style="margin:0; font-size:18px;">📓 選擇 Notion 工作頁面</h3>
+                    <button onclick="closeNotionPicker()" style="background:none;border:none;font-size:18px;cursor:pointer;opacity:0.6">✕</button>
+                </div>
+                <p style="font-size:12px; opacity:0.65; margin:0 0 12px;">
+                    選一個頁面當作 AI 的「目前工作頁」。之後叫 AI append / 修改 Notion 但沒指定頁面時，會自動用這個。
+                    沒看到想要的頁面？請去 Notion 該頁右上角 <strong>···</strong> →
+                    <strong>Connections</strong> → <strong>LLM_BOT</strong>，分享後重新整理。
+                </p>
+                <input id="notion-search-input" type="text" placeholder="搜尋頁面…"
+                    oninput="renderNotionList(this.value)"
+                    style="padding:8px 12px; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; font-size:13px; margin-bottom:10px;">
+                <div id="notion-list-container" style="overflow-y:auto; flex:1; min-height:200px; display:flex; flex-direction:column; gap:4px;">
+                    <div style="text-align:center; padding:40px; opacity:0.5; font-size:13px;">載入中…</div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:12px; border-top:1px solid var(--border-color,#e5e7eb);">
+                    <button onclick="refreshNotionPages()" style="background:none; border:1px solid var(--border-color,#e5e7eb); padding:6px 12px; border-radius:8px; cursor:pointer; font-size:12px;">🔄 重新整理</button>
+                    ${currentNotionPageId ? `<button onclick="clearNotionPage();closeNotionPicker()" style="background:none;border:1px solid #ef4444;color:#ef4444;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;">解除綁定</button>` : ""}
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener("click", (e) => { if (e.target === modal) closeNotionPicker(); });
+    }
+    modal.style.display = "flex";
+    refreshNotionPages();
+}
+
+function closeNotionPicker() {
+    const m = document.getElementById("notion-modal");
+    if (m) m.style.display = "none";
+}
+
+let _notionPagesCache = [];
+
+async function refreshNotionPages() {
+    const container = document.getElementById("notion-list-container");
+    if (!container) return;
+    container.innerHTML = `<div style="text-align:center; padding:40px; opacity:0.5; font-size:13px;">載入中…</div>`;
+    try {
+        const r = await fetch("/notion/pages");
+        const j = await r.json();
+        if (j.error) {
+            container.innerHTML = `<div style="padding:20px; color:#ef4444; font-size:13px;">❌ ${escapeHtml(j.error)}</div>`;
+            return;
+        }
+        _notionPagesCache = j.pages || [];
+        renderNotionList("");
+    } catch (e) {
+        container.innerHTML = `<div style="padding:20px; color:#ef4444; font-size:13px;">❌ ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderNotionList(filter) {
+    const container = document.getElementById("notion-list-container");
+    if (!container) return;
+    const q = (filter || "").trim().toLowerCase();
+    const pages = _notionPagesCache.filter(p =>
+        !q || (p.title || "").toLowerCase().includes(q)
+    );
+    if (!pages.length) {
+        container.innerHTML = `<div style="padding:30px; text-align:center; opacity:0.5; font-size:13px;">${q ? "沒有符合的頁面" : "沒有可用的頁面 — 請先在 Notion 把頁面分享給 LLM_BOT"}</div>`;
+        return;
+    }
+    // Group by parent for visual hierarchy
+    const byId = {}; pages.forEach(p => byId[p.id] = p);
+    const roots = []; const childrenOf = {};
+    for (const p of pages) {
+        if (p.parent_id && byId[p.parent_id]) {
+            (childrenOf[p.parent_id] ||= []).push(p);
+        } else {
+            roots.push(p);
+        }
+    }
+    const renderItem = (p, depth) => {
+        const selected = p.id === currentNotionPageId;
+        const indent = depth * 16;
+        const icon = p.icon && /^[\p{Emoji}]/u.test(p.icon) ? p.icon : "📄";
+        const safeTitle = escapeHtml(p.title || "(untitled)");
+        const safeUrl = escapeHtml(p.url || "");
+        const safeId = escapeHtml(p.id || "");
+        return `
+            <div onclick='pickNotionPage(${JSON.stringify(p.id)}, ${JSON.stringify(p.title || "(untitled)")}, ${JSON.stringify(p.url || "")})'
+                 style="display:flex; align-items:center; gap:8px; padding:8px 10px; padding-left:${10 + indent}px; border:1px solid ${selected ? "#6366f1" : "var(--border-color,#e5e7eb)"}; border-radius:8px; cursor:pointer; background:${selected ? "rgba(99,102,241,0.08)" : "transparent"}; font-size:13px;"
+                 onmouseover="this.style.background='rgba(99,102,241,0.05)'"
+                 onmouseout="this.style.background='${selected ? "rgba(99,102,241,0.08)" : "transparent"}'">
+                <span style="font-size:14px">${icon}</span>
+                <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${safeTitle}</span>
+                ${selected ? `<span style="font-size:10.5px; color:#6366f1">✓ 目前綁定</span>` : ""}
+                <span style="font-size:10px; opacity:0.4; font-family:ui-monospace,monospace">${safeId.slice(0,8)}</span>
+            </div>` + (childrenOf[p.id] || []).map(c => renderItem(c, depth + 1)).join("");
+    };
+    container.innerHTML = roots.map(p => renderItem(p, 0)).join("");
+}
+
+// ── Inline reasoning steps (per assistant message) ──────────────
+// Renders a small, collapsed-by-default "💭 思考過程" disclosure
+// inside the streaming assistant bubble.
+function _ensureThinkingHost(streamDiv) {
+    const wrap = streamDiv.querySelector(".msg-content");
+    let host = wrap.querySelector(".agent-thinking");
+    if (!host) {
+        host = document.createElement("details");
+        host.className = "agent-thinking";
+        host.style.cssText = "margin-bottom:6px; font-size:11px; opacity:0.75;";
+        host.innerHTML = `
+            <summary style="cursor:pointer; list-style:none; display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; border:1px solid var(--border-color,rgba(0,0,0,0.08));">
+                <span>💭</span><span>思考過程</span>
+            </summary>
+            <div class="agent-thinking-steps" style="margin-top:6px; padding-left:10px; border-left:2px solid var(--border-color,rgba(99,102,241,0.18)); display:flex; flex-direction:column; gap:4px;"></div>`;
+        wrap.insertBefore(host, wrap.firstChild);
+    }
+    return host.querySelector(".agent-thinking-steps");
+}
+
+function pushReasoningStep(streamDiv, text) {
+    if (!streamDiv) return;
+    const steps = _ensureThinkingHost(streamDiv);
     const step = document.createElement("div");
-    step.style.cssText = "padding:8px 12px;margin-bottom:6px;background:rgba(99,102,241,0.08);border-left:3px solid #6366f1;border-radius:6px;font-size:12px;animation:fadeIn 0.3s";
-    step.innerHTML = `<span style="opacity:0.6;font-size:10px">${time}</span><br>${escapeHtml(text)}`;
-    panel.appendChild(step);
-    panel.scrollTop = panel.scrollHeight;
+    step.style.cssText = "font-size:11px; line-height:1.45;";
+    step.textContent = text;
+    steps.appendChild(step);
 }
 
-function clearReasoningSteps() {
-    const panel = document.getElementById("reasoning-steps");
-    if (panel) panel.innerHTML = "";
-}
+// Kept for backwards-compat in case any other call site exists; no-op now.
+function clearReasoningSteps() {}
 
 // ── Render [IMAGE]url[/IMAGE] markers as actual images ───────────
 function processImageMarkers(html) {
     return html.replace(/\[IMAGE\](\/static\/uploads\/[^\[\]]+)\[\/IMAGE\]/g,
-        (_, url) => `<img src="${url}" class="generated-image" style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;cursor:pointer;border:1px solid var(--border-color, rgba(99,102,241,0.3));" onclick="window.open('${url}','_blank')" />`);
+        (_, url) => `<img src="${url}" class="generated-image" style="max-width:100%;max-height:640px;border-radius:8px;margin:8px 0;cursor:pointer;border:1px solid var(--border-color, rgba(99,102,241,0.3));object-fit:contain;" title="點擊以原始尺寸開啟" onclick="window.open('${url}','_blank')" />`);
 }
 
 // Override safeMarkdown to also process image markers
@@ -1979,29 +2158,32 @@ function clearImage() {
 }
 
 // ── Tool / route / memory badge rendering ──────────────────────
+// Compact chip: just "🔧 toolname · status". Click to expand args + result.
 function renderToolCallBadge(streamDiv, toolName, args, callId) {
     const wrap = streamDiv.querySelector(".msg-content");
     let host = wrap.querySelector(".tool-call-list");
     if (!host) {
         host = document.createElement("div");
         host.className = "tool-call-list";
-        host.style.cssText = "display:flex; flex-direction:column; gap:6px; margin-bottom:8px;";
+        host.style.cssText = "display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;";
         wrap.insertBefore(host, wrap.firstChild);
     }
-    const badge = document.createElement("div");
+    const badge = document.createElement("details");
     badge.className = "tool-call-badge";
     badge.dataset.id = callId;
-    badge.style.cssText = "padding:8px 12px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.25); font-size:12px; font-family: ui-monospace, monospace;";
+    badge.style.cssText = "font-size:11px; font-family:ui-monospace,monospace; border:1px solid var(--border-color,rgba(0,0,0,0.08)); border-radius:999px; background:transparent; padding:0; max-width:100%;";
     badge.innerHTML = `
-        <div style="display:flex; align-items:center; gap:8px">
-            <span>🔧</span>
-            <strong>${escapeHtml(toolName)}</strong>
-            <span class="tool-status" style="margin-left:auto; opacity:0.7">執行中…</span>
-        </div>
-        <div class="tool-args" style="margin-top:4px; font-size:11px; opacity:0.75; word-break:break-word;">
-            ${escapeHtml(JSON.stringify(args))}
-        </div>
-        <div class="tool-result" style="display:none; margin-top:6px; padding-top:6px; border-top:1px dashed rgba(99,102,241,0.25); white-space:pre-wrap; word-break:break-word;"></div>`;
+        <summary style="list-style:none; cursor:pointer; padding:3px 10px; display:flex; align-items:center; gap:6px; opacity:0.7;">
+            <span style="font-size:10px">🔧</span>
+            <span>${escapeHtml(toolName)}</span>
+            <span class="tool-status" style="opacity:0.6">· 執行中…</span>
+        </summary>
+        <div class="tool-body" style="padding:6px 10px 8px; border-top:1px dashed var(--border-color,rgba(0,0,0,0.08)); margin-top:2px;">
+            <div class="tool-args" style="font-size:10.5px; opacity:0.7; word-break:break-word;">
+                ${escapeHtml(JSON.stringify(args))}
+            </div>
+            <div class="tool-result" style="display:none; margin-top:6px; white-space:pre-wrap; word-break:break-word;"></div>
+        </div>`;
     host.appendChild(badge);
     return badge;
 }
@@ -2009,17 +2191,57 @@ function renderToolCallBadge(streamDiv, toolName, args, callId) {
 function updateToolCallBadge(streamDiv, callId, result) {
     const badge = streamDiv.querySelector(`.tool-call-badge[data-id="${callId}"]`);
     if (!badge) return;
-    badge.querySelector(".tool-status").textContent = "✅ 完成";
-    badge.querySelector(".tool-status").style.opacity = 1;
-    const r = badge.querySelector(".tool-result");
-    r.style.display = "block";
-    // Render [IMAGE]url[/IMAGE] markers as actual images.
-    const escaped = escapeHtml(result);
-    const withImages = escaped.replace(/\[IMAGE\](\/static\/uploads\/[^\[\]]+)\[\/IMAGE\]/g,
-        (_, url) => `<br><img src="${url}" style="max-width:100%;max-height:300px;border-radius:6px;cursor:pointer" onclick="window.open('${url}','_blank')" />`);
-    r.innerHTML = withImages;
-    badge.style.background = "rgba(34,197,94,0.06)";
-    badge.style.borderColor = "rgba(34,197,94,0.3)";
+    const status = badge.querySelector(".tool-status");
+    status.textContent = "· 完成";
+    status.style.opacity = 0.6;
+
+    // Detect [IMAGE]url[/IMAGE] markers up-front.
+    const imgUrls = [];
+    const re = /\[IMAGE\](\/static\/uploads\/[^\[\]]+)\[\/IMAGE\]/g;
+    let m;
+    while ((m = re.exec(result)) !== null) imgUrls.push(m[1]);
+
+    if (imgUrls.length) {
+        // For image-generating tools, the picture itself is the answer.
+        // Hide the badge body (args + raw text) entirely so the user
+        // only sees the image — no JSON args, no "saved to..." line.
+        const body = badge.querySelector(".tool-body");
+        if (body) body.remove();
+        badge.removeAttribute("open");
+        badge.style.pointerEvents = "none";
+        const summary = badge.querySelector("summary");
+        if (summary) summary.style.cursor = "default";
+    } else {
+        // Non-image tools: keep the expandable result text as plain text.
+        const r = badge.querySelector(".tool-result");
+        r.style.display = "block";
+        r.textContent = result;
+    }
+
+    // Render any [IMAGE] urls in a visible gallery above the bubble text.
+    if (imgUrls.length) {
+        const wrap = streamDiv.querySelector(".msg-content");
+        let gallery = wrap.querySelector(".tool-image-gallery");
+        if (!gallery) {
+            gallery = document.createElement("div");
+            gallery.className = "tool-image-gallery";
+            gallery.style.cssText = "display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 10px;";
+            const list = wrap.querySelector(".tool-call-list");
+            if (list && list.nextSibling) wrap.insertBefore(gallery, list.nextSibling);
+            else wrap.insertBefore(gallery, wrap.firstChild);
+        }
+        for (const url of imgUrls) {
+            if (gallery.querySelector(`img[data-src="${url}"]`)) continue;
+            const img = document.createElement("img");
+            img.src = url;
+            img.dataset.src = url;
+            img.className = "generated-image";
+            img.style.cssText = "max-width:100%; max-height:640px; border-radius:8px; cursor:pointer; border:1px solid var(--border-color, rgba(99,102,241,0.3)); object-fit:contain;";
+            img.title = "點擊以原始尺寸開啟";
+            img.onclick = () => window.open(url, "_blank");
+            gallery.appendChild(img);
+        }
+    }
 }
 
 function renderRouteBadge(streamDiv, model, reason) {

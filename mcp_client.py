@@ -106,7 +106,7 @@ class MCPClient:
 
     # ---- Tool invocation (sync API) -----------------------------------
 
-    def call_tool(self, name: str, args: dict, timeout: float = 30.0) -> str:
+    def call_tool(self, name: str, args: dict, timeout: float = 150.0) -> str:
         if not self.connected or self._loop is None:
             raise RuntimeError(f"MCP client not connected: {self._error}")
         future = asyncio.run_coroutine_threadsafe(

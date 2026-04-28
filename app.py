@@ -209,6 +209,19 @@ def tools_execute():
 def mcp_status():
     return jsonify(mcp_client.status)
 
+# ---- Notion page picker ----------------------------------------------
+
+@app.route("/notion/pages", methods=["GET"])
+def notion_pages():
+    """Return a flat list of pages the integration can see, for the
+    frontend page-picker. Groups sub-pages under their parent client-side."""
+    try:
+        from mcp_tools.notion_tools import notion_list_pages_structured
+        pages = notion_list_pages_structured(limit=100)
+        return jsonify({"pages": pages})
+    except Exception as e:
+        return jsonify({"error": str(e), "pages": []}), 500
+
 # ---- Analytics Dashboard ---------------------------------------------
 
 import analytics
@@ -467,11 +480,58 @@ def chat_stream():
         user_msg_for_history = {"role": "user", "content": user_message}
     history.append(user_msg_for_history)
 
+    # Always-on behavioral guidance — taught to every model regardless of
+    # the user's chosen mode/system_prompt. Fixes recurring failure modes
+    # like "AI promises to build HTML then doesn't deliver it inline".
+    base_behavior = (
+        "## 行為準則\n"
+        "1. **HTML / web app / 遊戲 / widget / 計分板 / 儀表板 / 互動頁**："
+        "請直接在這一輪回覆裡，把**完整可運作**的 HTML 寫在 ```html``` "
+        "code block 內（含內嵌 CSS 和 JavaScript，single-file，不要外部依賴）。"
+        "前端會自動在這個 code block 旁邊顯示「▶ 預覽」按鈕，"
+        "點下去會在右側 artifact panel 即時渲染 — 所以你只要寫 inline 就好，"
+        "**不要呼叫工具、不要說『讓我先用 Python 生成』、不要切多個訊息**。\n\n"
+        "**HTML/遊戲品質要求 — 像 Anthropic claude.ai 的 artifact 那樣**：\n"
+        "  - **完整可運作**：所有功能、所有狀態、所有事件處理都要實作，"
+        "    絕對不要寫 `// TODO`、`// implement later`、`// rest of the logic`、"
+        "    `// ... more code` 這種佔位符。\n"
+        "  - **遊戲類**（Pacman / 貪食蛇 / 俄羅斯方塊 / 計分板 / 桌遊…）必須包含："
+        "完整地圖/棋盤、所有 entity 的 AI / 移動邏輯、碰撞偵測、計分、生命/回合、"
+        "開始/暫停/結束狀態、鍵盤/觸控操作、音效或視覺回饋（用 Web Audio API 即可）。\n"
+        "  - **視覺**：用現代 CSS（漸層、陰影、霓虹、CRT 效果、動畫）做出有質感的 UI，"
+        "不要陽春白底黑字。配色協調、有 hover/active 狀態、有過場動畫。\n"
+        "  - **長度沒上限**：max_tokens 已設到 16384，請盡情寫到完整為止。"
+        "與其給半成品，不如把功能稍微減一點但每個都做到位。\n"
+        "  - **直接給最終版**，不要先給簡化版說「之後可以加上 X」。\n"
+        "2. **SVG 圖形 / CSS 動畫**：同樣寫在 ```svg``` 或 ```css``` block，會自動預覽。\n"
+        "3. **Mermaid 圖表**：寫在 ```mermaid``` block。\n"
+        "4. **不要承諾後失蹤** — 如果你說「現在開始做」「讓我來」「我馬上生成」，"
+        "請務必在**同一個回覆**就把成品給出來，不要寫一句話就停。\n"
+        "5. **多步驟工具任務**（例如建 Notion 頁 + 三個資料庫 + 塞 row）："
+        "獨立的 tool call 請在同一輪 tool_calls 陣列一次塞全部，不要 serial。"
+    )
+
     # Inject long-term memory into system prompt.
     memory_context = memory_mgr.build_context(user_message or "image", limit=5)
-    effective_system = (stored_system_prompt or "").strip()
+    effective_system = base_behavior
+    if (stored_system_prompt or "").strip():
+        effective_system = effective_system + "\n\n" + stored_system_prompt.strip()
     if memory_context:
         effective_system = (effective_system + "\n\n" + memory_context).strip()
+
+    # Inject Notion working-page context if the user picked one in the UI.
+    notion_page_id = (data.get("notion_page_id") or "").strip()
+    notion_page_title = (data.get("notion_page_title") or "").strip()
+    if notion_page_id:
+        notion_ctx = (
+            f"[Notion 工作頁面已選定] 使用者目前綁定的 Notion 頁面：\n"
+            f"  title: {notion_page_title or '(unknown)'}\n"
+            f"  page_id: {notion_page_id}\n"
+            "當使用者要在 Notion 新增 / append / 修改內容但沒明確指定頁面時，"
+            "**直接用上面的 page_id 呼叫對應工具**（notion_append_to_page、"
+            "notion_create_page 的 parent_id 等），不要再反問是哪個頁面。"
+        )
+        effective_system = (effective_system + "\n\n" + notion_ctx).strip()
 
     # Build the messages payload sent to Groq. For vision, the last user
     # message becomes a content array with text + image_url parts.
@@ -511,6 +571,13 @@ def chat_stream():
 
     def generate():
         full_response = ""
+        # Track image URLs surfaced by tool results (e.g. generate_image)
+        # so we can persist them on the assistant message and re-render
+        # them when the conversation is reloaded.
+        tool_image_urls: list[str] = []
+        import re as _re
+        _img_marker = _re.compile(r"\[IMAGE\](/static/uploads/[^\[\]]+)\[/IMAGE\]")
+
         meta = {
             "conv_id": conv_id,
             "title": conversations[conv_id]["title"],
@@ -531,11 +598,16 @@ def chat_stream():
                 # through MCP when connected, otherwise local fallback.
                 for sse in agentic_stream(chat_client, full_messages, model=stored_model,
                                           tool_executor=mcp_executor):
-                    # Capture content chunks while passing through.
+                    # Capture content chunks and harvest image URLs.
                     try:
                         payload = json.loads(sse[6:])  # strip "data: "
-                        if isinstance(payload, dict) and payload.get("content"):
-                            full_response += payload["content"]
+                        if isinstance(payload, dict):
+                            if payload.get("content"):
+                                full_response += payload["content"]
+                            if payload.get("type") == "tool_result":
+                                for u in _img_marker.findall(str(payload.get("result", ""))):
+                                    if u not in tool_image_urls:
+                                        tool_image_urls.append(u)
                     except Exception:
                         pass
                     yield sse
@@ -545,7 +617,7 @@ def chat_stream():
                     model=stored_model,
                     messages=full_messages,
                     stream=True,
-                    max_tokens=4096,
+                    max_tokens=16384,
                 )
                 for chunk in stream:
                     content = chunk.choices[0].delta.content
@@ -553,7 +625,10 @@ def chat_stream():
                         full_response += content
                         yield f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
         finally:
-            history.append({"role": "assistant", "content": full_response})
+            assistant_msg = {"role": "assistant", "content": full_response}
+            if tool_image_urls:
+                assistant_msg["images"] = tool_image_urls
+            history.append(assistant_msg)
             if len(history) == 2:
                 conversations[conv_id]["title"] = user_message[:40] + ("..." if len(user_message) > 40 else "")
             conversations[conv_id]["messages"] = history

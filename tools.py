@@ -218,6 +218,24 @@ LOCAL_TOOLS = {
 }
 
 
+def _merge_mcp_handlers_into_local():
+    """Pull every handler from mcp_tools into LOCAL_TOOLS so that if the
+    MCP subprocess is down/slow/timed-out, mcp_executor's fallback path
+    still has a real implementation for tools like generate_image,
+    execute_python, etc. — not just the original four."""
+    try:
+        from mcp_tools import ALL_TOOLS
+    except Exception:
+        return
+    for name, info in ALL_TOOLS.items():
+        handler = info.get("handler")
+        if handler and name not in LOCAL_TOOLS:
+            LOCAL_TOOLS[name] = handler
+
+
+_merge_mcp_handlers_into_local()
+
+
 def _build_full_tool_definitions():
     """Build OpenAI-format tool definitions from the mcp_tools registry.
     Imported lazily so tools.py doesn't depend on mcp_tools at module load."""
@@ -248,14 +266,99 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def _build_post_tool_nudge(msgs: List[Dict], force_final: bool = False) -> Dict:
+    """A system reminder that pins down trust in tool results — used both
+    between rounds and on the final-answer round.
+
+    When `force_final=True`, the model is told the tool budget is exhausted
+    and MUST write a user-facing summary."""
+    image_was_generated = any(
+        isinstance(m.get("content"), str) and "[IMAGE]" in m["content"]
+        and m.get("role") == "tool"
+        for m in msgs
+    )
+    lines = [
+        "你剛剛已經透過函式呼叫（tool calls）執行了工具，"
+        "上面 role=tool 的訊息是真實的執行結果，請完全採信並據此回覆。",
+        "絕對不要說『我沒有 X 能力』、『我無法執行 X』、『我只是文字模型』之類的話，"
+        "因為你確實已經完成了該動作。",
+    ]
+    if force_final:
+        lines.append(
+            "**你的工具呼叫額度已用盡，這一輪不能再呼叫任何工具，必須寫文字回覆給使用者。**\n"
+            "請：\n"
+            "1) 簡短列出你『已經完成』的事項（每件一行，附上 tool result 裡的 URL 或 id 給使用者）\n"
+            "2) 如果還有未完成的部分，明確告訴使用者：『剩下 X / Y / Z 還沒做完，要的話請說「繼續」』\n"
+            "3) 不要寫 markdown 表頭 #；用簡單條列就好\n"
+            "**絕對不要回覆空白或只回「好的」「已完成」這種沒資訊的話。**"
+        )
+    else:
+        lines.extend([
+            "如果使用者要求多步驟任務（例如：先生圖、再建 Notion 頁面、再加資料庫、再塞 row），"
+            "**繼續呼叫工具直到全部做完**，不要在中途只用文字回應假裝完成。",
+            "**效率提示：當你需要呼叫多個彼此獨立的工具時（例如同時建三個資料庫、"
+            "或一次塞五個 row），請在同一輪的 tool_calls 陣列裡一次回傳全部，"
+            "不要分多輪一次只 call 一個 — 工具呼叫額度有限，serial 會跑不完。**",
+        ])
+    if image_was_generated:
+        lines.append(
+            "特別注意：generate_image 工具已經成功幫使用者產生了圖片，"
+            "圖片已顯示在使用者畫面上。如果接下來使用者還要把圖片放進 Notion，"
+            "請呼叫 notion_add_image，**並用工具回傳的 Pollinations URL（image.pollinations.ai 那個）**，"
+            "不要用本機 /static/uploads 路徑（Notion 看不到本機檔）。"
+        )
+    return {"role": "system", "content": "\n".join(lines)}
+
+
+def _stream_final_answer(client, model, msgs, force_final: bool = False):
+    """Stream a final text answer with the trust-your-tools nudge prepended.
+    Returns the total characters streamed so the caller can detect empty
+    replies and emit a fallback."""
+    nudge = _build_post_tool_nudge(msgs, force_final=force_final)
+    msgs_for_final = [nudge] + msgs
+    stream = client.chat.completions.create(
+        model=model, messages=msgs_for_final,
+        max_tokens=16384, stream=True,
+    )
+    chars = 0
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            chars += len(delta)
+            yield _sse({"content": delta})
+    # Signal to caller via a marker on the generator. Generators can't
+    # cleanly return values from a yield-from in Python without a wrapper,
+    # so emit a sentinel SSE event the agentic loop can swallow.
+    yield _sse({"_final_chars": chars})
+
+
+def _summarize_completed_tools(msgs: List[Dict]) -> str:
+    """Build a concise human-readable summary of tool results so we can
+    show *something* if the model produces an empty final reply."""
+    lines = []
+    for m in msgs:
+        if m.get("role") != "tool":
+            continue
+        content = m.get("content") or ""
+        first_line = content.splitlines()[0] if content else ""
+        url_match = re.search(r"https?://\S+", content)
+        if url_match:
+            lines.append(f"• {first_line[:80]}  →  {url_match.group(0)}")
+        else:
+            lines.append(f"• {first_line[:120]}")
+    return "\n".join(lines[:30])
+
+
 def agentic_stream(client, messages: List[Dict], model: str,
-                   max_rounds: int = 4,
+                   max_rounds: int = 25,
                    tool_executor: Optional[Callable[[str, dict], str]] = None,
                    ) -> Generator[str, None, None]:
     """Drive a multi-round tool-calling loop, yielding SSE strings.
 
-    Each round either streams the model's text response (terminal round)
-    or executes tool calls and feeds their results back into the model.
+    Each round, the model is offered the full tool catalog. It either
+    requests more tool calls (we execute, append results, loop) or finishes
+    with a text reply. On the LAST round we strip tools so the model is
+    forced to produce its final prose.
 
     `tool_executor(tool_name, args) -> str` lets the caller route execution
     through MCP. Defaults to LOCAL_TOOLS.
@@ -266,121 +369,159 @@ def agentic_stream(client, messages: List[Dict], model: str,
         )(args)
 
     msgs = list(messages)
-    tools_consumed = False  # once tools have been used, don't expose them again
+    tool_defs = get_tool_definitions(extended=True)
 
-    # Emit a reasoning event for the right panel.
     yield _sse({"type": "reasoning", "step": "🤔 分析使用者需求…"})
 
     for round_idx in range(max_rounds):
-        # First round offers tools; after any tool execution we drop tools=
-        # so the model produces a textual final answer (avoids Groq's
-        # tool-loop format errors).
-        offering_tools = (round_idx == 0 and not tools_consumed)
+        is_last_round = (round_idx == max_rounds - 1)
 
-        if offering_tools:
-            # Non-streaming probe to detect tool_calls. If the model
-            # produces an invalid tool-call format (Groq Llama quirk),
-            # fall back to a plain streamed answer without tools.
-            tool_defs = get_tool_definitions(extended=True)
+        # Last round: force a final text answer (no more tools).
+        if is_last_round:
+            yield _sse({"type": "reasoning",
+                        "step": "📝 已達工具上限，整合結果撰寫回覆…"})
+            final_chars = 0
             try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=msgs,
-                    tools=tool_defs,
-                    tool_choice="auto",
-                    max_tokens=4096,
-                )
+                for sse in _stream_final_answer(client, model, msgs, force_final=True):
+                    # Swallow the sentinel; pass everything else through.
+                    if '"_final_chars"' in sse:
+                        try:
+                            final_chars = json.loads(sse[6:]).get("_final_chars", 0)
+                        except Exception:
+                            pass
+                        continue
+                    yield sse
             except Exception as e:
-                err_text = str(e)
-                if "tool_use_failed" in err_text or "Failed to call a function" in err_text:
-                    yield _sse({"type": "tool_call_failed",
-                                "message": "模型未能正確產生工具呼叫，改用直接回答。"})
-                    try:
-                        stream = client.chat.completions.create(
-                            model=model, messages=msgs,
-                            max_tokens=4096, stream=True,
-                        )
-                        for chunk in stream:
-                            delta = chunk.choices[0].delta.content
-                            if delta:
-                                yield _sse({"content": delta})
-                    except Exception as e2:
-                        yield _sse({"type": "error",
-                                    "message": f"Fallback failed: {e2}"})
-                    return
-                yield _sse({"type": "error", "message": f"LLM error: {e}"})
+                yield _sse({"type": "error", "message": f"Stream error: {e}"})
                 return
+            # Fallback: if the model wrote nothing, synthesize a summary
+            # from the tool results so the user always sees feedback.
+            if final_chars == 0:
+                summary = _summarize_completed_tools(msgs)
+                fallback = ("已達工具呼叫上限，這是目前完成的事項：\n\n"
+                            + (summary or "(沒有任何工具成功完成)")
+                            + "\n\n要繼續做剩下的部分請說「繼續」。")
+                yield _sse({"content": fallback})
+            return
 
-            choice = resp.choices[0]
-            msg = choice.message
-
-            if choice.finish_reason == "tool_calls" and msg.tool_calls:
-                tool_names = [tc.function.name for tc in msg.tool_calls]
-                yield _sse({"type": "reasoning",
-                            "step": f"🔧 決定使用工具：{', '.join(tool_names)}"})
-                msgs.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                })
-                for tc in msg.tool_calls:
-                    tool_name = tc.function.name
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except Exception:
-                        args = {}
-                    yield _sse({"type": "tool_call", "tool": tool_name,
-                                "args": args, "id": tc.id})
-                    try:
-                        result = tool_executor(tool_name, args)
-                    except Exception as e:
-                        result = f"Tool execution error: {e}"
-                    if not isinstance(result, str):
-                        result = json.dumps(result, ensure_ascii=False)
-                    yield _sse({"type": "tool_result", "tool": tool_name,
-                                "result": result, "id": tc.id})
-                    msgs.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result,
-                    })
-                tools_consumed = True
-                yield _sse({"type": "reasoning",
-                            "step": "✅ 工具執行完成，整合結果中…"})
-                continue
-            else:
-                # Model answered directly without tools — stream it now.
-                yield _sse({"type": "reasoning", "step": "💬 直接回答（不需工具）"})
-                if msg.content:
-                    yield _sse({"content": msg.content})
-                return
-
-        # Tool results are in messages; ask for a streamed final answer
-        # without tools so the model writes prose.
-        yield _sse({"type": "reasoning", "step": "📝 根據工具結果撰寫回覆…"})
+        # Streaming probe with tools available. Pass content chunks straight
+        # through to the user (so a long inline answer doesn't look frozen),
+        # while also accumulating any tool_call deltas. After the stream
+        # ends we know whether to execute tools or to exit.
+        probe_msgs = msgs if round_idx == 0 else [_build_post_tool_nudge(msgs)] + msgs
         try:
             stream = client.chat.completions.create(
                 model=model,
-                messages=msgs,
-                max_tokens=4096,
+                messages=probe_msgs,
+                tools=tool_defs,
+                tool_choice="auto",
+                max_tokens=16384,
                 stream=True,
             )
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield _sse({"content": delta})
         except Exception as e:
-            yield _sse({"type": "error", "message": f"Stream error: {e}"})
-        return
+            err_text = str(e)
+            # Llama on Groq occasionally emits malformed tool_calls JSON.
+            # Fall back to a streamed plain answer so the user still sees
+            # something rather than a hard failure.
+            if "tool_use_failed" in err_text or "Failed to call a function" in err_text:
+                yield _sse({"type": "tool_call_failed",
+                            "message": "模型未能正確產生工具呼叫，改用直接回答。"})
+                try:
+                    for sse in _stream_final_answer(client, model, msgs):
+                        if '"_final_chars"' in sse:
+                            continue
+                        yield sse
+                except Exception as e2:
+                    yield _sse({"type": "error",
+                                "message": f"Fallback failed: {e2}"})
+                return
+            yield _sse({"type": "error", "message": f"LLM error: {e}"})
+            return
 
-    yield _sse({"content": "（已達到工具呼叫回合上限）"})
+        # Drain the stream: pass content chunks through live, accumulate
+        # tool_call deltas (they arrive as partial JSON across chunks).
+        streamed_content = ""
+        tc_acc: dict = {}  # index → {"id", "name", "arguments"}
+        finish_reason = None
+        try:
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                ch = chunk.choices[0]
+                delta = ch.delta
+                if getattr(delta, "content", None):
+                    streamed_content += delta.content
+                    yield _sse({"content": delta.content})
+                if getattr(delta, "tool_calls", None):
+                    for tc in delta.tool_calls:
+                        idx = getattr(tc, "index", 0) or 0
+                        slot = tc_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                slot["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["arguments"] += fn.arguments
+                if ch.finish_reason:
+                    finish_reason = ch.finish_reason
+        except Exception as e:
+            yield _sse({"type": "error", "message": f"Stream read error: {e}"})
+            return
+
+        tool_calls_list = [v for _, v in sorted(tc_acc.items())]
+
+        # No tool calls → model is done. Content already streamed; exit.
+        if finish_reason != "tool_calls" or not tool_calls_list:
+            if round_idx == 0 and not streamed_content.strip():
+                # Edge case: model returned nothing at all
+                yield _sse({"content": "(模型沒有回覆內容)"})
+            elif round_idx == 0:
+                yield _sse({"type": "reasoning", "step": "💬 直接回答（不需工具）"})
+            else:
+                yield _sse({"type": "reasoning", "step": "✅ 工作完成"})
+            return
+
+        # Otherwise: execute the requested tools, then loop back.
+        tool_names = [tc["name"] for tc in tool_calls_list]
+        yield _sse({"type": "reasoning",
+                    "step": f"🔧 第 {round_idx + 1} 輪工具：{', '.join(tool_names)}"})
+
+        msgs.append({
+            "role": "assistant",
+            "content": streamed_content,
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
+                }
+                for tc in tool_calls_list
+            ],
+        })
+        for tc in tool_calls_list:
+            tool_name = tc["name"]
+            try:
+                args = json.loads(tc["arguments"] or "{}")
+            except Exception:
+                args = {}
+            yield _sse({"type": "tool_call", "tool": tool_name,
+                        "args": args, "id": tc["id"]})
+            try:
+                result = tool_executor(tool_name, args)
+            except Exception as e:
+                result = f"Tool execution error: {e}"
+            if not isinstance(result, str):
+                result = json.dumps(result, ensure_ascii=False)
+            yield _sse({"type": "tool_result", "tool": tool_name,
+                        "result": result, "id": tc["id"]})
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result,
+            })
+        # Loop continues — model gets to call more tools or finalize next round.
