@@ -890,7 +890,9 @@ marked.use({
 });
 
 // ── Init ─────────────────────────────────────────────────────────
-(async function init() {
+// Defer to next tick so const declarations later in the script (e.g. FX)
+// finish initializing before init() touches them.
+async function _init_() {
     initDark();
     initUISettings();
     initModeSwitcher();
@@ -900,12 +902,12 @@ marked.use({
     await loadModels();
     await loadConversations();
     document.getElementById("messages").addEventListener("scroll", onMessagesScroll);
-    // Restore saved draft
     const draft = localStorage.getItem("input_draft");
     const ta = document.getElementById("user-input");
     if (draft) { ta.value = draft; onInput(ta); }
     else ta.focus();
-})();
+}
+setTimeout(_init_, 0);
 
 // ── Models ───────────────────────────────────────────────────────
 async function loadModels() {
@@ -2751,23 +2753,24 @@ async function openProviderManager() {
         modal = document.createElement("div");
         modal.id = "provider-modal";
         modal.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;opacity:1;visibility:visible";
+        const inputStyle = "padding:8px;border-radius:6px;border:1px solid var(--border,rgba(255,255,255,0.18));background:var(--surface2,rgba(255,255,255,0.10));color:var(--text,#fff);font-size:12px";
         modal.innerHTML = `
-            <div style="background:var(--bg-primary,#fff);border-radius:14px;padding:22px;width:min(640px,92vw);max-height:85vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,0.18)">
+            <div style="background:#2a2540;border:1px solid var(--border,rgba(255,255,255,0.18));color:var(--text,#fff);border-radius:14px;padding:22px;width:min(640px,92vw);max-height:85vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.55);backdrop-filter:saturate(180%) blur(20px)">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-                    <h3 style="margin:0;font-size:18px">🔑 API 提供者管理</h3>
-                    <button onclick="closeProviderManager()" style="background:none;border:none;font-size:18px;cursor:pointer;opacity:0.6">✕</button>
+                    <h3 style="margin:0;font-size:18px;color:var(--text,#fff)">🔑 API 提供者管理</h3>
+                    <button onclick="closeProviderManager()" style="background:none;border:none;color:var(--text,#fff);font-size:18px;cursor:pointer;opacity:0.6">✕</button>
                 </div>
-                <p style="font-size:13px;opacity:0.7;margin:0 0 14px">加入你自己的 API key，使用 OpenAI、Claude、OpenRouter、DeepSeek 等模型。Key 存在伺服器端 providers.json，已加入 .gitignore。</p>
+                <p style="font-size:13px;opacity:0.75;margin:0 0 14px">加入你自己的 API key，使用 OpenAI、Claude、OpenRouter、DeepSeek 等模型。Key 存在伺服器端 providers.json，已加入 .gitignore。</p>
                 <h4 style="margin:14px 0 8px;font-size:13px">新增提供者</h4>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-                    <select id="provider-template" onchange="onProviderTemplateChange()" style="padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px">
+                    <select id="provider-template" onchange="onProviderTemplateChange()" style="${inputStyle}">
                         <option value="">-- 選擇預設 --</option>
                     </select>
-                    <input id="provider-name" placeholder="顯示名稱（自訂）" style="padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px">
+                    <input id="provider-name" placeholder="顯示名稱（自訂）" style="${inputStyle}">
                 </div>
-                <input id="provider-base-url" placeholder="Base URL，例如 https://api.openai.com/v1" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
-                <input id="provider-api-key" type="password" placeholder="API key（不會顯示）" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
-                <input id="provider-models" placeholder="模型 ID 用逗號分隔，例如 gpt-4o, gpt-4o-mini" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
+                <input id="provider-base-url" placeholder="Base URL，例如 https://api.openai.com/v1" style="${inputStyle};width:100%;margin-bottom:8px">
+                <input id="provider-api-key" type="password" placeholder="API key（不會顯示）" style="${inputStyle};width:100%;margin-bottom:8px">
+                <input id="provider-models" placeholder="模型 ID 用逗號分隔，例如 gpt-4o, gpt-4o-mini" style="${inputStyle};width:100%;margin-bottom:8px">
                 <button onclick="addProvider()" style="padding:8px 18px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">新增</button>
                 <h4 style="margin:18px 0 8px;font-size:13px">已啟用的提供者</h4>
                 <div id="provider-list-container"></div>
@@ -2809,13 +2812,13 @@ async function refreshProviderList() {
     const list = await (await fetch("/providers")).json();
     const c = document.getElementById("provider-list-container");
     if (!list.length) {
-        c.innerHTML = `<div style="padding:14px;text-align:center;opacity:0.5;font-size:12px">尚未新增提供者，預設使用內建 Groq。</div>`;
+        c.innerHTML = `<div style="padding:14px;text-align:center;opacity:0.5;font-size:12px;color:var(--text,#fff)">尚未新增提供者，預設使用內建 Groq。</div>`;
         return;
     }
     c.innerHTML = list.map(p => {
         const ledger = p.last_test_ok === true ? "🟢 OK" : p.last_test_ok === false ? "🔴 失敗" : "⚪ 未測試";
         return `
-            <div style="padding:10px;border:1px solid var(--border-color,#e5e7eb);border-radius:8px;margin-bottom:6px;font-size:12px">
+            <div style="padding:10px;border:1px solid var(--border,rgba(255,255,255,0.18));background:var(--surface,rgba(255,255,255,0.05));border-radius:8px;margin-bottom:6px;font-size:12px;color:var(--text,#fff)">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
                     <strong>${escapeHtml(p.name)}</strong>
                     <span style="opacity:0.6">[${escapeHtml(p.type)}]</span>
@@ -2823,9 +2826,9 @@ async function refreshProviderList() {
                     <button onclick="testProvider('${p.id}')" style="margin-left:auto;padding:3px 10px;background:#6366f1;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">測試</button>
                     <button onclick="deleteProvider('${p.id}')" style="padding:3px 10px;background:#ef4444;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">刪除</button>
                 </div>
-                <div style="opacity:0.7">${escapeHtml(p.base_url)}</div>
-                <div style="opacity:0.6">Key: ${escapeHtml(p.api_key)} · Models: ${(p.models || []).join(", ")}</div>
-                ${p.last_test_message ? `<div style="opacity:0.6;font-style:italic;margin-top:4px">${escapeHtml(p.last_test_message)}</div>` : ""}
+                <div style="opacity:0.75">${escapeHtml(p.base_url)}</div>
+                <div style="opacity:0.65">Key: ${escapeHtml(p.api_key)} · Models: ${(p.models || []).join(", ")}</div>
+                ${p.last_test_message ? `<div style="opacity:0.65;font-style:italic;margin-top:4px">${escapeHtml(p.last_test_message)}</div>` : ""}
             </div>`;
     }).join("");
 }

@@ -26,6 +26,10 @@
     --border:       rgba(255, 255, 255, 0.18);
     --border2:      rgba(255, 255, 255, 0.28);
 
+    /* Aliases used by inline modal styles — same dark-glass palette */
+    --bg-primary:   #2a2540;
+    --border-color: rgba(255, 255, 255, 0.18);
+
     /* Text — high contrast white over the saturated backdrop */
     --text:         rgba(255, 255, 255, 0.96);
     --text2:        rgba(255, 255, 255, 0.78);
