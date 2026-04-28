@@ -1213,6 +1213,49 @@ async function sendMessage() {
     const streamBubble = streamDiv.querySelector(".stream-bubble");
     let fullContent = "", thinkingRemoved = false;
 
+    // ── Typewriter-style drip ──────────────────────────────────
+    // The backend hands us 50–150 chars per chunk with ~400ms gaps,
+    // which feels lurchy. Buffer incoming chars and reveal them at a
+    // smooth rate via requestAnimationFrame. The drip rate
+    // auto-accelerates if the backlog is large so we never fall behind
+    // the actual stream completion time.
+    let dripBuffer = "";   // chars waiting to be shown
+    let dripShown  = "";   // chars currently rendered
+    let dripping   = false;
+    let dripDoneCb = null; // fired when buffer is empty after stream end
+    let lastDripT  = 0;
+    function tickDrip(now) {
+        if (!lastDripT) lastDripT = now;
+        const dt = now - lastDripT;
+        lastDripT = now;
+        if (dripBuffer.length === 0) {
+            dripping = false;
+            lastDripT = 0;
+            if (dripDoneCb) { const cb = dripDoneCb; dripDoneCb = null; cb(); }
+            return;
+        }
+        // Base ~180 chars/sec; faster when backlog grows so we catch up.
+        let rate = 0.18;
+        if (dripBuffer.length > 80)  rate = 0.40;
+        if (dripBuffer.length > 250) rate = 0.90;
+        if (dripBuffer.length > 600) rate = 2.50;  // emergency catch-up
+        let n = Math.max(1, Math.floor(rate * dt));
+        n = Math.min(n, dripBuffer.length);
+        dripShown  += dripBuffer.slice(0, n);
+        dripBuffer  = dripBuffer.slice(n);
+        fullContent = dripShown;
+        streamBubble.innerHTML = safeMarkdown(fullContent);
+        messages.scrollTop = messages.scrollHeight;
+        requestAnimationFrame(tickDrip);
+    }
+    function pushDrip(text) {
+        dripBuffer += text;
+        if (!dripping) {
+            dripping = true;
+            requestAnimationFrame(tickDrip);
+        }
+    }
+
     try {
         const reqBody = {
             message: apiMessage, conversation_id: currentConvId,
@@ -1282,38 +1325,47 @@ async function sendMessage() {
                     }
                     if (data.content) {
                         if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
-                        fullContent += data.content;
-                        streamBubble.innerHTML = safeMarkdown(fullContent);
-                        messages.scrollTop = messages.scrollHeight;
+                        // Hand the chunk to the drip; it'll trickle into
+                        // the bubble at a smooth typewriter pace.
+                        pushDrip(data.content);
                     }
                     if (data.done) {
-                        streamBubble.innerHTML   = safeMarkdown(fullContent);
-                        streamBubble.dataset.raw = fullContent;
-                        // Drop the streaming class so the blinking caret
-                        // pseudo-element disappears once content is final.
-                        streamBubble.classList.remove("stream-bubble");
-                        renderMath(streamBubble);
-                        renderMermaidDiagrams(streamBubble);
-                        fixCodeLangs(streamBubble);
-                        const actDiv = document.createElement("div");
-                        actDiv.className = "message-actions";
-                        actDiv.innerHTML = `
-                            <button class="action-btn copy-msg-btn" onclick="copyMessage(this)">${COPY_SVG} 複製</button>
-                            <button class="action-btn" onclick="quickAction(this,'summarize')">📋 摘要</button>
-                            <button class="action-btn" onclick="quickAction(this,'translate')">🌐 翻譯</button>
-                            <button class="action-btn" onclick="quickAction(this,'rewrite')">✏️ 改寫</button>
-                            <button class="action-btn" onclick="sendToStudio(this)">📝 筆記</button>
-                            <button class="action-btn regen-btn" onclick="regenerateResponse()">${REGEN_SVG} 重新生成</button>`;
-                        streamDiv.querySelector(".msg-content").appendChild(actDiv);
-                        const t = document.createElement("span");
-                        t.className = "msg-time";
-                        t.textContent = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
-                        streamDiv.appendChild(t);
-                        if (data.title) {
-                            document.getElementById("conv-header-title").textContent = data.title;
-                            document.title = data.title + " — AI Assistant";
+                        // Capture done payload (title etc.) before drip flush
+                        const doneData = data;
+                        const finalize = () => {
+                            fullContent = dripShown + dripBuffer;
+                            streamBubble.innerHTML   = safeMarkdown(fullContent);
+                            streamBubble.dataset.raw = fullContent;
+                            streamBubble.classList.remove("stream-bubble");
+                            renderMath(streamBubble);
+                            renderMermaidDiagrams(streamBubble);
+                            fixCodeLangs(streamBubble);
+
+                            const actDiv = document.createElement("div");
+                            actDiv.className = "message-actions";
+                            actDiv.innerHTML = `
+                                <button class="action-btn copy-msg-btn" onclick="copyMessage(this)">${COPY_SVG} 複製</button>
+                                <button class="action-btn" onclick="quickAction(this,'summarize')">📋 摘要</button>
+                                <button class="action-btn" onclick="quickAction(this,'translate')">🌐 翻譯</button>
+                                <button class="action-btn" onclick="quickAction(this,'rewrite')">✏️ 改寫</button>
+                                <button class="action-btn" onclick="sendToStudio(this)">📝 筆記</button>
+                                <button class="action-btn regen-btn" onclick="regenerateResponse()">${REGEN_SVG} 重新生成</button>`;
+                            streamDiv.querySelector(".msg-content").appendChild(actDiv);
+                            const t = document.createElement("span");
+                            t.className = "msg-time";
+                            t.textContent = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
+                            streamDiv.appendChild(t);
+                            if (doneData.title) {
+                                document.getElementById("conv-header-title").textContent = doneData.title;
+                                document.title = doneData.title + " — AI Assistant";
+                            }
+                            loadConversations();
+                        };
+                        if (dripBuffer.length === 0 && !dripping) {
+                            finalize();
+                        } else {
+                            dripDoneCb = finalize;
                         }
-                        loadConversations();
                     }
                 } catch(e) {}
             }
