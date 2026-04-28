@@ -634,14 +634,17 @@ def chat_stream():
             conversations[conv_id]["messages"] = history
             save_conversations(conversations)
             yield f"data: {json.dumps({'done': True, 'title': conversations[conv_id]['title']}, ensure_ascii=False)}\n\n"
-            # Auto-extract user facts every 2 user turns (background, non-blocking).
-            user_turns = sum(1 for m in history if m.get("role") == "user")
-            if user_turns >= 2 and user_turns % 2 == 0:
-                threading.Thread(
-                    target=_extract_memory_bg,
-                    args=(conv_id, list(history[-6:])),
-                    daemon=True,
-                ).start()
+            # Auto-extract user facts on every user turn (background, non-blocking).
+            # Previously fired only on even-numbered turns (2,4,6…), which
+            # silently skipped extraction for one-shot conversations like
+            # "我喜歡吃西瓜" → AI reply → user starts a new chat. The extractor
+            # is cheap (8B model) and idempotent (dedupe on content), so we
+            # can safely run it every turn.
+            threading.Thread(
+                target=_extract_memory_bg,
+                args=(conv_id, list(history[-6:])),
+                daemon=True,
+            ).start()
 
     return Response(
         stream_with_context(generate()),

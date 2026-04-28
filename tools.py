@@ -426,15 +426,29 @@ def agentic_stream(client, messages: List[Dict], model: str,
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
                 # Build a slim retry: drop the giant base_behavior + tool
-                # schemas, keep only a one-line system prompt + the user's
-                # latest message. Free-tier Groq has 6000-12000 TPM, so the
-                # original 17000-token request can't squeeze through.
+                # schemas, but PRESERVE the memory context block — without
+                # it, the model can't answer "what fruit do I like" etc.
+                # Free-tier Groq has 6000-12000 TPM; full request is ~17000.
                 last_user = next((m for m in reversed(msgs)
                                   if m.get("role") == "user"), None)
-                slim_msgs = [{
-                    "role": "system",
-                    "content": "Reply concisely. Tools are unavailable in this turn.",
-                }]
+                # Pull just the memory block out of the original system prompt
+                # (lines starting with "[已知使用者資訊" or "Known User Context").
+                mem_block = ""
+                orig_system = next((m.get("content", "") for m in msgs
+                                    if m.get("role") == "system"), "")
+                if orig_system:
+                    marker_idx = orig_system.find("[已知使用者資訊")
+                    if marker_idx == -1:
+                        marker_idx = orig_system.find("Known User Context")
+                    if marker_idx != -1:
+                        mem_block = orig_system[marker_idx:].strip()
+
+                slim_system = "Reply concisely in the user's language. " \
+                              "Tools are unavailable in this turn."
+                if mem_block:
+                    slim_system += "\n\n" + mem_block
+
+                slim_msgs = [{"role": "system", "content": slim_system}]
                 if last_user:
                     slim_msgs.append({"role": "user",
                                       "content": last_user.get("content", "")})
@@ -497,15 +511,29 @@ def agentic_stream(client, messages: List[Dict], model: str,
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
                 # Build a slim retry: drop the giant base_behavior + tool
-                # schemas, keep only a one-line system prompt + the user's
-                # latest message. Free-tier Groq has 6000-12000 TPM, so the
-                # original 17000-token request can't squeeze through.
+                # schemas, but PRESERVE the memory context block — without
+                # it, the model can't answer "what fruit do I like" etc.
+                # Free-tier Groq has 6000-12000 TPM; full request is ~17000.
                 last_user = next((m for m in reversed(msgs)
                                   if m.get("role") == "user"), None)
-                slim_msgs = [{
-                    "role": "system",
-                    "content": "Reply concisely. Tools are unavailable in this turn.",
-                }]
+                # Pull just the memory block out of the original system prompt
+                # (lines starting with "[已知使用者資訊" or "Known User Context").
+                mem_block = ""
+                orig_system = next((m.get("content", "") for m in msgs
+                                    if m.get("role") == "system"), "")
+                if orig_system:
+                    marker_idx = orig_system.find("[已知使用者資訊")
+                    if marker_idx == -1:
+                        marker_idx = orig_system.find("Known User Context")
+                    if marker_idx != -1:
+                        mem_block = orig_system[marker_idx:].strip()
+
+                slim_system = "Reply concisely in the user's language. " \
+                              "Tools are unavailable in this turn."
+                if mem_block:
+                    slim_system += "\n\n" + mem_block
+
+                slim_msgs = [{"role": "system", "content": slim_system}]
                 if last_user:
                     slim_msgs.append({"role": "user",
                                       "content": last_user.get("content", "")})
