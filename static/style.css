@@ -1,46 +1,88 @@
+/* ────────────────────────────────────────────────────────────────
+   Apple Vision Pro-inspired glassmorphism theme.
+   Vibrant gradient backdrop + frosted glass panels everywhere.
+   ──────────────────────────────────────────────────────────────── */
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
+
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* ════════════════ TOKENS ════════════════ */
 :root {
-    --bg:           #f7faf8;
-    --sidebar:      #ffffff;
-    --surface:      #eef4f0;
-    --surface2:     #e4ede6;
-    --surface3:     #d8e8db;
-    --border:       #dbe6dd;
-    --border2:      #c8d9cb;
-    --text:         #1a2b1e;
-    --text2:        #4a6252;
-    --text3:        #8fa898;
-    --accent:       #16a34a;
-    --accent2:      #15803d;
-    --accent-glow:  rgba(22, 163, 74, 0.18);
-    --accent-dim:   rgba(22, 163, 74, 0.08);
-    --blue:         #2563eb;
-    --red:          #dc2626;
-    --green:        #16a34a;
-    --radius:       12px;
-    --sidebar-w:    268px;
+    /* Vibrant gradient backdrop (purple → pink → orange) */
+    --bg-grad-1:  #6b3df0;
+    --bg-grad-2:  #d946ef;
+    --bg-grad-3:  #fb923c;
+    --bg-grad-4:  #f59e0b;
+
+    /* Glass panel tints — semi-transparent white over the gradient */
+    --bg:           transparent;
+    --sidebar:      rgba(255, 255, 255, 0.12);
+    --surface:      rgba(255, 255, 255, 0.10);
+    --surface2:     rgba(255, 255, 255, 0.16);
+    --surface3:     rgba(255, 255, 255, 0.22);
+
+    /* Hairline glass borders — a touch of translucent white */
+    --border:       rgba(255, 255, 255, 0.18);
+    --border2:      rgba(255, 255, 255, 0.28);
+
+    /* Text — high contrast white over the saturated backdrop */
+    --text:         rgba(255, 255, 255, 0.96);
+    --text2:        rgba(255, 255, 255, 0.78);
+    --text3:        rgba(255, 255, 255, 0.55);
+
+    /* Accent colors — soft pastels that play nice with the gradient */
+    --accent:       #ffffff;
+    --accent2:      rgba(255, 255, 255, 0.85);
+    --accent-glow:  rgba(255, 255, 255, 0.25);
+    --accent-dim:   rgba(255, 255, 255, 0.12);
+
+    --blue:         #93c5fd;
+    --red:          #fca5a5;
+    --green:        #86efac;
+
+    /* Glass effect tokens */
+    --glass-blur:   saturate(180%) blur(40px);
+    --glass-blur-sm: saturate(180%) blur(20px);
+    --glass-shadow: 0 8px 32px rgba(31, 22, 64, 0.25),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+                    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+    --glass-shadow-lift: 0 16px 48px rgba(31, 22, 64, 0.40),
+                         inset 0 1px 0 rgba(255, 255, 255, 0.40),
+                         inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+
+    --radius:       16px;
+    --radius-lg:    24px;
+    --radius-xl:    32px;
+    --sidebar-w:    280px;
     --chat-w:       820px;
     --font-size:    15px;
 }
 
 /* ════════════════ DARK MODE ════════════════ */
+/* Same glass language, just deeper backdrop */
 body.dark {
-    --bg:           #0f1612;
-    --sidebar:      #161d19;
-    --surface:      #1c2620;
-    --surface2:     #222e26;
-    --surface3:     #283524;
-    --border:       #2a3a2e;
-    --border2:      #344a38;
-    --text:         #e8f0ea;
-    --text2:        #91b09a;
-    --text3:        #526b58;
-    --accent:       #22c55e;
-    --accent2:      #16a34a;
-    --accent-glow:  rgba(34, 197, 94, 0.2);
-    --accent-dim:   rgba(34, 197, 94, 0.1);
+    --bg-grad-1:  #1e1b4b;
+    --bg-grad-2:  #6b21a8;
+    --bg-grad-3:  #be185d;
+    --bg-grad-4:  #9f1239;
+
+    --sidebar:      rgba(255, 255, 255, 0.06);
+    --surface:      rgba(255, 255, 255, 0.05);
+    --surface2:     rgba(255, 255, 255, 0.08);
+    --surface3:     rgba(255, 255, 255, 0.12);
+    --border:       rgba(255, 255, 255, 0.12);
+    --border2:      rgba(255, 255, 255, 0.18);
+    --text:         rgba(255, 255, 255, 0.96);
+    --text2:        rgba(255, 255, 255, 0.72);
+    --text3:        rgba(255, 255, 255, 0.45);
+    --accent-glow:  rgba(255, 255, 255, 0.18);
+    --accent-dim:   rgba(255, 255, 255, 0.08);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.50),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+                    inset 0 -1px 0 rgba(255, 255, 255, 0.03);
+    --glass-shadow-lift: 0 16px 48px rgba(0, 0, 0, 0.65),
+                         inset 0 1px 0 rgba(255, 255, 255, 0.24),
+                         inset 0 -1px 0 rgba(255, 255, 255, 0.05);
 }
 
 body.dark .message.user .bubble {
@@ -67,27 +109,77 @@ body.dark .btn-secondary { background: var(--surface2); border-color: var(--bord
 
 /* ════════════════ BASE ════════════════ */
 body {
-    font-family: "Inter", -apple-system, sans-serif;
-    background: var(--bg);
+    font-family: "Pretendard Variable", "Pretendard", -apple-system,
+                 "SF Pro Display", "Inter", "Noto Sans TC", sans-serif;
     color: var(--text);
     height: 100vh;
     overflow: hidden;
     font-size: var(--font-size);
+    letter-spacing: -0.01em;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Vibrant gradient backdrop, fixed so panels float over it. */
+    background:
+        radial-gradient(ellipse 80% 60% at 80% 0%,  var(--bg-grad-2) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 0% 50%,  var(--bg-grad-1) 0%, transparent 60%),
+        radial-gradient(ellipse 90% 60% at 100% 100%, var(--bg-grad-3) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 30% 90%,  var(--bg-grad-4) 0%, transparent 60%),
+        linear-gradient(135deg, var(--bg-grad-1), var(--bg-grad-3));
+    background-attachment: fixed;
+    background-size: cover;
+    position: relative;
 }
 
-.layout { display: flex; height: 100vh; }
+/* Subtle floating "aurora" orbs that drift behind the glass panels.
+   Kept off-screen-clipped via overflow:hidden on body/layout. */
+body::before,
+body::after {
+    content: "";
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.55;
+    pointer-events: none;
+    z-index: 0;
+    will-change: transform;
+}
+body::before {
+    width: 520px; height: 520px;
+    top: -120px; left: -80px;
+    background: radial-gradient(circle, var(--bg-grad-2) 0%, transparent 70%);
+    animation: drift1 22s ease-in-out infinite alternate;
+}
+body::after {
+    width: 600px; height: 600px;
+    bottom: -160px; right: -120px;
+    background: radial-gradient(circle, var(--bg-grad-4) 0%, transparent 70%);
+    animation: drift2 28s ease-in-out infinite alternate;
+}
+@keyframes drift1 {
+    0%   { transform: translate(0, 0)        scale(1); }
+    100% { transform: translate(120px, 80px) scale(1.15); }
+}
+@keyframes drift2 {
+    0%   { transform: translate(0, 0)         scale(1); }
+    100% { transform: translate(-100px, -60px) scale(1.12); }
+}
+
+.layout { display: flex; height: 100vh; position: relative; z-index: 1; }
 
 /* ════════════════ SIDEBAR ════════════════ */
 .sidebar {
     width: var(--sidebar-w);
     background: var(--sidebar);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border-right: 1px solid var(--border);
+    box-shadow: var(--glass-shadow);
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
     transition: transform 0.25s ease;
     z-index: 50;
+    position: relative;
 }
 
 .sidebar-overlay {
@@ -116,6 +208,7 @@ body {
     align-items: center;
     justify-content: center;
     font-size: 16px;
+    color: #fff;
     box-shadow: 0 2px 12px var(--accent-glow);
     flex-shrink: 0;
 }

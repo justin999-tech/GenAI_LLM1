@@ -1289,6 +1289,9 @@ async function sendMessage() {
                     if (data.done) {
                         streamBubble.innerHTML   = safeMarkdown(fullContent);
                         streamBubble.dataset.raw = fullContent;
+                        // Drop the streaming class so the blinking caret
+                        // pseudo-element disappears once content is final.
+                        streamBubble.classList.remove("stream-bubble");
                         renderMath(streamBubble);
                         renderMermaidDiagrams(streamBubble);
                         fixCodeLangs(streamBubble);
