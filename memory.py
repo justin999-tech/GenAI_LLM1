@@ -180,33 +180,50 @@ class MemoryManager:
                           recent_messages: List[Dict]) -> List[str]:
         """Use a fast LLM call to extract user facts from recent dialogue.
 
-        Returns list of newly-added memory IDs.
+        Only the USER's own turns are forwarded to the extractor — earlier
+        revisions also passed assistant replies, and the small extractor
+        model would mistake the assistant's suggestions ("比如：香蕉、橙子…")
+        for user preferences, polluting memory with fruits the user never
+        mentioned.
         """
         if not recent_messages:
             return []
-        dialogue = "\n".join(
-            f"{m['role'].upper()}: {m['content']}" for m in recent_messages
-            if isinstance(m.get("content"), str)
-        )[:4000]
+        user_turns = [
+            m["content"] for m in recent_messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+            and m["content"].strip()
+        ]
+        if not user_turns:
+            return []
+        dialogue = "\n".join(f"- {t}" for t in user_turns)[:4000]
 
         sys = (
-            "你是一個記憶提取器。從對話中找出『關於使用者』值得長期記住的事實、"
-            "偏好或指令。只擷取使用者明確表達的事實（例如姓名、職業、語言偏好、"
-            "技術背景、習慣），不要記錄一次性問題或助理的回覆內容。"
-            "若沒有值得記憶的內容，回傳 []。"
-            "回應格式必須是 JSON 陣列，每項為 "
+            "你是一個記憶提取器。輸入是『使用者本人』寫的訊息（已過濾掉助理回覆）。"
+            "請從這些訊息中抽出值得長期記住的個人事實、偏好、指令。\n\n"
+            "嚴格規則：\n"
+            "1. 只記錄使用者**明確、肯定**陳述的事 — "
+            "「我喜歡 X」「我是 Y」「我用 Z」這種句型才算。\n"
+            "2. 反問、假設、列舉選項都不算。\n"
+            "   反例：「我應該喜歡哪個？」「比如香蕉、橙子」→ 不要抽。\n"
+            "3. 一次性問題不算（例如「2+2=?」不要記成事實）。\n"
+            "4. 抽出的 content 用第三人稱簡述，例如：\n"
+            "   輸入「我喜歡吃西瓜」→ content「喜歡吃西瓜」, category「preference」。\n"
+            "   輸入「我用 PyTorch」→ content「使用 PyTorch」, category「fact」。\n"
+            "5. 沒有值得記的就回傳 []。\n\n"
+            "回應**只能**是 JSON 陣列，每項 "
             "{\"content\": \"...\", \"category\": \"fact|preference|instruction\"}。"
-            "不要輸出任何其他文字。"
+            "不要輸出任何說明文字。"
         )
         try:
             resp = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": sys},
-                    {"role": "user", "content": f"對話內容：\n{dialogue}"},
+                    {"role": "user",
+                     "content": f"使用者本人的訊息：\n{dialogue}"},
                 ],
                 max_tokens=400,
-                temperature=0.2,
+                temperature=0.0,
             )
             raw = resp.choices[0].message.content.strip()
         except Exception:
