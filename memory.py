@@ -99,17 +99,39 @@ class MemoryManager:
     }
 
     def _tokenize(self, text: str) -> List[str]:
-        text = re.sub(r"[^\w一-鿿]+", " ", (text or "").lower())
-        toks = [t for t in text.split() if t and t not in self._STOPWORDS and len(t) > 1]
-        return toks
+        """Hybrid tokenizer for mixed CJK + Latin text.
+
+        - ASCII words split on whitespace/punctuation as before.
+        - CJK characters are emitted as 2-char sliding bigrams (and singles),
+          so Chinese queries like "我喜歡吃什麼食物" can match stored
+          memories like "喜歡吃香菜" via the shared bigrams 喜歡/歡吃/吃...
+        """
+        text = (text or "").lower()
+        ascii_text = re.sub(r"[^a-z0-9_\s]+", " ", text)
+        ascii_toks = [t for t in ascii_text.split()
+                      if t and t not in self._STOPWORDS and len(t) > 1]
+
+        cjk_chars = re.findall(r"[一-鿿]", text)
+        cjk_toks = []
+        for ch in cjk_chars:
+            if ch not in self._STOPWORDS:
+                cjk_toks.append(ch)
+        # Bigrams catch most Chinese phrases without a real segmenter.
+        bigrams = []
+        cjk_run = re.findall(r"[一-鿿]+", text)
+        for run in cjk_run:
+            for i in range(len(run) - 1):
+                bg = run[i:i+2]
+                if bg not in self._STOPWORDS:
+                    bigrams.append(bg)
+
+        return ascii_toks + bigrams + cjk_toks
 
     def search(self, query: str, limit: int = 5) -> List[Dict]:
         """Return memories most relevant to the query.
 
-        Always blends keyword-matched results with high-priority general
-        memories (high access_count, recent) so the chatbot retains
-        baseline awareness of the user even when the query has no
-        token overlap with stored facts.
+        Falls back to recent + frequently-accessed memories when the query
+        has no token overlap, so the chatbot keeps baseline awareness.
         """
         tokens = self._tokenize(query)
         with self._lock, self._conn() as c:
@@ -123,14 +145,14 @@ class MemoryManager:
                 hits = sum(1 for t in tokens if t in txt) if tokens else 0
                 scored.append((hits, dict(r)))
 
-            # Sort by hits desc, then access_count desc, then recency desc.
+            # Highest hits first, then most-accessed, then newest.
             scored.sort(
                 key=lambda x: (
-                    -x[0],
-                    -(x[1].get("access_count") or 0),
+                    x[0],
+                    x[1].get("access_count") or 0,
                     x[1]["created_at"],
                 ),
-                reverse=False,
+                reverse=True,
             )
             top = [m for _, m in scored[:limit]]
 

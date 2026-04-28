@@ -423,14 +423,38 @@ def agentic_stream(client, messages: List[Dict], model: str,
             # Llama on Groq occasionally emits malformed tool_calls JSON.
             # Fall back to a streamed plain answer so the user still sees
             # something rather than a hard failure.
-            if "tool_use_failed" in err_text or "Failed to call a function" in err_text:
+            if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
+                    or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
+                # Build a slim retry: drop the giant base_behavior + tool
+                # schemas, keep only a one-line system prompt + the user's
+                # latest message. Free-tier Groq has 6000-12000 TPM, so the
+                # original 17000-token request can't squeeze through.
+                last_user = next((m for m in reversed(msgs)
+                                  if m.get("role") == "user"), None)
+                slim_msgs = [{
+                    "role": "system",
+                    "content": "Reply concisely. Tools are unavailable in this turn.",
+                }]
+                if last_user:
+                    slim_msgs.append({"role": "user",
+                                      "content": last_user.get("content", "")})
+                fallback_model = "llama-3.1-8b-instant"
+                reason = "Groq 免費 tier 速率限制" \
+                    if "rate_limit" in err_text or "too large" in err_text \
+                    else "工具呼叫失敗"
                 yield _sse({"type": "tool_call_failed",
-                            "message": "模型未能正確產生工具呼叫，改用直接回答。"})
+                            "message": f"{reason}，改用 {fallback_model} 精簡回答。"})
                 try:
-                    for sse in _stream_final_answer(client, model, msgs):
-                        if '"_final_chars"' in sse:
+                    slim_stream = client.chat.completions.create(
+                        model=fallback_model, messages=slim_msgs,
+                        max_tokens=2048, stream=True,
+                    )
+                    for chunk in slim_stream:
+                        if not chunk.choices:
                             continue
-                        yield sse
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            yield _sse({"content": delta})
                 except Exception as e2:
                     yield _sse({"type": "error",
                                 "message": f"Fallback failed: {e2}"})
@@ -467,6 +491,45 @@ def agentic_stream(client, messages: List[Dict], model: str,
                 if ch.finish_reason:
                     finish_reason = ch.finish_reason
         except Exception as e:
+            err_text = str(e)
+            # Same Groq malformed-tool-call failure as above, but raised
+            # mid-stream. Retry without tools so the user still gets a reply.
+            if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
+                    or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
+                # Build a slim retry: drop the giant base_behavior + tool
+                # schemas, keep only a one-line system prompt + the user's
+                # latest message. Free-tier Groq has 6000-12000 TPM, so the
+                # original 17000-token request can't squeeze through.
+                last_user = next((m for m in reversed(msgs)
+                                  if m.get("role") == "user"), None)
+                slim_msgs = [{
+                    "role": "system",
+                    "content": "Reply concisely. Tools are unavailable in this turn.",
+                }]
+                if last_user:
+                    slim_msgs.append({"role": "user",
+                                      "content": last_user.get("content", "")})
+                fallback_model = "llama-3.1-8b-instant"
+                reason = "Groq 免費 tier 速率限制" \
+                    if "rate_limit" in err_text or "too large" in err_text \
+                    else "工具呼叫失敗"
+                yield _sse({"type": "tool_call_failed",
+                            "message": f"{reason}，改用 {fallback_model} 精簡回答。"})
+                try:
+                    slim_stream = client.chat.completions.create(
+                        model=fallback_model, messages=slim_msgs,
+                        max_tokens=2048, stream=True,
+                    )
+                    for chunk in slim_stream:
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            yield _sse({"content": delta})
+                except Exception as e2:
+                    yield _sse({"type": "error",
+                                "message": f"Fallback failed: {e2}"})
+                return
             yield _sse({"type": "error", "message": f"Stream read error: {e}"})
             return
 
