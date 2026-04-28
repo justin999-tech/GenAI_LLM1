@@ -166,6 +166,21 @@ body::after {
 
 .layout { display: flex; height: 100vh; position: relative; z-index: 1; }
 
+/* Polished scrollbars everywhere */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
+* { scrollbar-color: rgba(255,255,255,0.18) transparent; scrollbar-width: thin; }
+
+/* Smooth scrolling and selection */
+html { scroll-behavior: smooth; }
+::selection { background: rgba(255, 255, 255, 0.30); color: #fff; }
+
 /* ════════════════ SIDEBAR ════════════════ */
 .sidebar {
     width: var(--sidebar-w);
@@ -646,9 +661,10 @@ body.density-compact .bubble { font-size: 14px; line-height: 1.65; }
 .message.user { flex-direction: row-reverse; }
 
 @keyframes msgIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
 }
+.message { animation: msgIn 0.35s cubic-bezier(0.34, 1.20, 0.64, 1); }
 
 .msg-avatar {
     width: 36px;
@@ -923,8 +939,21 @@ body.density-compact .bubble { font-size: 14px; line-height: 1.65; }
     justify-content: space-between;
     padding: 4px 4px 0;
     gap: 8px;
+    flex-wrap: wrap;
 }
-.input-footer-left { gap: 6px !important; }
+.input-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 6px !important;
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+}
+.disclaimer {
+    flex-shrink: 0;
+    text-align: right;
+    white-space: nowrap;
+}
 
 .input-wrapper {
     width: 100%;
@@ -1541,13 +1570,16 @@ body.dark .mermaid-block svg text { fill: var(--text) !important; }
 .artifact-panel {
     width: 0;
     border-left: 0px solid var(--border);
-    background: var(--bg);
+    background: var(--sidebar);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     flex-shrink: 0;
     transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
                 border-left-width 0.32s;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.18);
 }
 .artifact-panel.open {
     width: 48%;
@@ -1558,10 +1590,10 @@ body.dark .mermaid-block svg text { fill: var(--text) !important; }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
-    height: 54px;
+    padding: 0 18px;
+    height: 60px;
     border-bottom: 1px solid var(--border);
-    background: var(--sidebar);
+    background: rgba(255, 255, 255, 0.04);
     flex-shrink: 0;
     gap: 12px;
 }
@@ -1579,11 +1611,12 @@ body.dark .mermaid-block svg text { fill: var(--text) !important; }
     min-width: 0;
 }
 .artifact-icon {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent), var(--accent2));
-    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20));
+    border: 1px solid rgba(255,255,255,0.30);
+    color: #fff;
     font-size: 12px;
     display: flex;
     align-items: center;
@@ -1599,29 +1632,30 @@ body.dark .mermaid-block svg text { fill: var(--text) !important; }
 .artifact-tabs {
     display: flex;
     background: var(--surface);
-    border: 1px solid var(--border2);
-    border-radius: 8px;
-    padding: 2px;
+    backdrop-filter: var(--glass-blur-sm);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px;
     gap: 1px;
 }
 .artifact-tab {
     background: none;
     border: none;
-    border-radius: 6px;
-    color: var(--text3);
+    border-radius: 9px;
+    color: var(--text2);
     font-size: 12.5px;
     font-family: inherit;
     font-weight: 500;
     padding: 5px 12px;
     cursor: pointer;
-    transition: all 0.12s;
+    transition: all 0.18s ease;
     white-space: nowrap;
 }
-.artifact-tab:hover { color: var(--text2); }
+.artifact-tab:hover { color: var(--text); }
 .artifact-tab.active {
-    background: var(--sidebar);
+    background: var(--surface3);
     color: var(--text);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.30);
 }
 .artifact-body {
     flex: 1;
