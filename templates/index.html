@@ -21,6 +21,10 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<!-- Particle FX overlay — fixed full-screen canvas above everything;
+     pointer-events:none so it never blocks UI. Engine is below in JS,
+     guarded by a localStorage toggle (default off). -->
+<canvas id="fx-canvas" style="position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:200;display:none"></canvas>
 <div class="layout">
 
     <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
@@ -362,6 +366,14 @@
                         <option value="tokyo-night-dark">Tokyo Night</option>
                     </select>
                 </div>
+                <div class="setting-group">
+                    <label>✨ 粒子特效</label>
+                    <span class="setting-hint">送訊息時文字碎成粒子飛散；AI 開始回覆時粒子凝聚成回答。預設關閉。</span>
+                    <div class="pill-group" id="fx-particles-pills">
+                        <button class="pill" data-value="0" onclick="setParticleFx(false,true)">關閉</button>
+                        <button class="pill" data-value="1" onclick="setParticleFx(true,true)">開啟</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Tab: 對話 -->
@@ -574,6 +586,20 @@ function applyCodeTheme(theme, save = true) {
     const sel = document.getElementById("code-theme-select");
     if (sel) sel.value = theme;
     if (save) updateUISetting("codeTheme", theme);
+}
+
+// ── Particle FX toggle ──────────────────────────────────────────
+function setParticleFx(on, save = true) {
+    FX.setOn(on);
+    document.querySelectorAll("#fx-particles-pills .pill").forEach(p => {
+        p.classList.toggle("active", p.dataset.value === (on ? "1" : "0"));
+    });
+    if (save && on) showToast("✨ 粒子特效已開啟");
+    else if (save) showToast("粒子特效已關閉");
+}
+function applyParticleFxFromStorage() {
+    const on = localStorage.getItem("fx_particles") === "1";
+    setParticleFx(on, false);
 }
 
 // ── Dark mode ────────────────────────────────────────────────────
@@ -843,6 +869,7 @@ marked.use({
     initUISettings();
     initModeSwitcher();
     initColorSwatches();
+    applyParticleFxFromStorage();
     await loadModels();
     await loadConversations();
     document.getElementById("messages").addEventListener("scroll", onMessagesScroll);
@@ -1196,8 +1223,20 @@ async function sendMessage() {
     document.getElementById("char-counter").textContent = "0";
     localStorage.removeItem("input_draft");
     const nowTime = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
-    addMessage("user", message, true, nowTime);
+    const userMsgDiv = addMessage("user", message, true, nowTime);
     setLoading(true); isStreaming = true;
+
+    // Particle FX: dissolve a tiny preview from the user bubble. Quietly
+    // no-ops when the toggle is off — don't pay for it on the silent path.
+    try {
+        if (FX.isOn()) {
+            const bubble = userMsgDiv.querySelector(".bubble");
+            const r = bubble.getBoundingClientRect();
+            const previewText = message.slice(0, 24);
+            FX.dissolveText(previewText, r.left + r.width/2, r.top + r.height/2,
+                            { color: "255,255,255", fontSize: 18 });
+        }
+    } catch (e) { /* never let FX crash the send path */ }
 
     const messages  = document.getElementById("messages");
     const streamDiv = document.createElement("div");
@@ -1324,7 +1363,19 @@ async function sendMessage() {
                         streamBubble.innerHTML = `<span style="color:#ef4444">${escapeHtml(data.message)}</span>`;
                     }
                     if (data.content) {
-                        if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
+                        if (!thinkingRemoved) {
+                            streamBubble.innerHTML = "";
+                            thinkingRemoved = true;
+                            // First chunk → trigger an assemble burst
+                            // converging onto the AI bubble.
+                            try {
+                                if (FX.isOn()) {
+                                    const r = streamBubble.getBoundingClientRect();
+                                    FX.assembleBurst(r.left + 20, r.top + 12,
+                                                     { count: 60, color: "255,255,255" });
+                                }
+                            } catch (e) {}
+                        }
                         // Hand the chunk to the drip; it'll trickle into
                         // the bubble at a smooth typewriter pace.
                         pushDrip(data.content);
@@ -1976,6 +2027,171 @@ function copyStudio() {
 // Lab 2 v2 features: image upload, memory, tool badges, route badge,
 // MCP status, modals.
 // ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+// Particle FX engine — text-dissolve & assemble effects.
+// Off by default; toggle via localStorage 'fx_particles' === '1'.
+// ════════════════════════════════════════════════════════════════════
+const FX = (() => {
+    const canvas = document.getElementById("fx-canvas");
+    const ctx = canvas.getContext("2d");
+    let dpr = window.devicePixelRatio || 1;
+    let particles = [];
+    let running = false;
+    let lastT = 0;
+
+    function resize() {
+        dpr = window.devicePixelRatio || 1;
+        canvas.width  = window.innerWidth  * dpr;
+        canvas.height = window.innerHeight * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    function isOn() {
+        return localStorage.getItem("fx_particles") === "1";
+    }
+
+    function setOn(v) {
+        localStorage.setItem("fx_particles", v ? "1" : "0");
+        if (!v) { particles = []; canvas.style.display = "none"; }
+    }
+
+    function loop(now) {
+        if (!particles.length) {
+            running = false;
+            canvas.style.display = "none";
+            return;
+        }
+        const dt = Math.min(50, now - lastT) || 16;
+        lastT = now;
+        ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        // Additive blend so overlapping particles glow rather than just stack.
+        ctx.globalCompositeOperation = "lighter";
+        const alive = [];
+        for (const p of particles) {
+            p.life -= dt;
+            if (p.life <= 0) continue;
+            if (p.target) {
+                const dx = p.target.x - p.x;
+                const dy = p.target.y - p.y;
+                p.vx += dx * 0.0006 * dt;
+                p.vy += dy * 0.0006 * dt;
+                p.vx *= 0.92;
+                p.vy *= 0.92;
+            } else {
+                p.vy += p.gravity * dt;
+            }
+            p.x += p.vx * dt * 0.06;
+            p.y += p.vy * dt * 0.06;
+            const opacity = Math.min(1, p.life / 600);
+            // Soft glow + bright core
+            ctx.fillStyle = `rgba(${p.color}, ${opacity * 0.25})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(${p.color}, ${opacity})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+            alive.push(p);
+        }
+        ctx.globalCompositeOperation = "source-over";
+        particles = alive;
+        requestAnimationFrame(loop);
+    }
+
+    function ensureRunning() {
+        if (running) return;
+        running = true;
+        canvas.style.display = "block";
+        lastT = performance.now();
+        requestAnimationFrame(loop);
+    }
+
+    // Render text to a hidden canvas, sample pixels, return particle list
+    // anchored at (originX, originY) in viewport coordinates.
+    function textToParticles(text, originX, originY, opts = {}) {
+        const fontSize  = opts.fontSize || 22;
+        const sampleStep= opts.step     || 4;
+        const color     = opts.color    || "255,255,255";
+        const off = document.createElement("canvas");
+        const oc = off.getContext("2d");
+        oc.font = `${fontSize}px Pretendard, sans-serif`;
+        const w = Math.ceil(oc.measureText(text).width) + 10;
+        const h = fontSize + 10;
+        off.width = w; off.height = h;
+        oc.font = `${fontSize}px Pretendard, sans-serif`;
+        oc.fillStyle = "#fff";
+        oc.textBaseline = "middle";
+        oc.fillText(text, 5, h / 2);
+        const data = oc.getImageData(0, 0, w, h).data;
+        const out = [];
+        for (let y = 0; y < h; y += sampleStep) {
+            for (let x = 0; x < w; x += sampleStep) {
+                const idx = (y * w + x) * 4;
+                if (data[idx + 3] > 128) {
+                    out.push({
+                        x: originX + x - w / 2,
+                        y: originY + y - h / 2,
+                        sx: originX + x - w / 2,
+                        sy: originY + y - h / 2,
+                        size: 1.6 + Math.random() * 0.8,
+                        color,
+                    });
+                }
+            }
+        }
+        return out;
+    }
+
+    // Burst: text at the bubble, particles fly outward & dissipate.
+    function dissolveText(text, x, y, opts = {}) {
+        if (!isOn() || !text) return;
+        const pts = textToParticles(text, x, y, opts);
+        for (const p of pts) {
+            const ang = Math.random() * Math.PI * 2;
+            const speed = 1.5 + Math.random() * 2.5;
+            particles.push({
+                x: p.x, y: p.y,
+                vx: Math.cos(ang) * speed,
+                vy: Math.sin(ang) * speed - 1.5,
+                size: p.size,
+                color: opts.color || "255,255,255",
+                life: 600 + Math.random() * 600,
+                gravity: 0.04,
+            });
+        }
+        ensureRunning();
+    }
+
+    // Assemble: particles fly INTO the bubble from random off-screen
+    // positions and converge — used when AI response begins.
+    function assembleBurst(x, y, opts = {}) {
+        if (!isOn()) return;
+        const count = opts.count || 70;
+        const color = opts.color || "255,255,255";
+        for (let i = 0; i < count; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            const dist = 200 + Math.random() * 200;
+            particles.push({
+                x: x + Math.cos(ang) * dist,
+                y: y + Math.sin(ang) * dist,
+                vx: 0, vy: 0,
+                size: 1.8 + Math.random() * 1.0,
+                color,
+                life: 900 + Math.random() * 400,
+                gravity: 0,
+                target: { x: x + (Math.random() - 0.5) * 30,
+                          y: y + (Math.random() - 0.5) * 16 },
+            });
+        }
+        ensureRunning();
+    }
+
+    return { dissolveText, assembleBurst, setOn, isOn };
+})();
 
 // ── Image upload state ──────────────────────────────────────────
 let currentImageData = null;   // base64 (no data: prefix)
