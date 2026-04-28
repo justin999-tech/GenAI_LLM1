@@ -1,62 +1,39 @@
 GenAI LLM Chatbot v2 — System Introduction
 
-Author: Justin
-Course: GenAI Lab 2
+Author: Justin     Course: GenAI Lab 2
 GitHub: https://github.com/justin999-tech/GenAI_LLM1
 
 
 OVERVIEW
 
-An agentic web chatbot that extends HW01 with the five v2 features required by the assignment, plus a set of user-facing extras. The system is a Python Flask backend serving a vanilla-JS glassmorphism frontend, paired with an isolated MCP (Model Context Protocol) server subprocess that exposes 23 real tools to the model. All five HW02 requirements are implemented as first-class subsystems, not surface-level demos.
+An agentic web chatbot extending HW01 with the five v2 features. Python Flask backend, vanilla-JS glassmorphism frontend, plus an isolated MCP (Model Context Protocol) server subprocess that exposes 23 real tools to the model.
 
 
 HW02 REQUIRED FEATURES
 
-1. Auto Routing between models
-   router.py inspects every request (image attached? "fast"/short? long context? math?) and picks one of 5 Groq models — Llama 3.3 70B (default), Llama 3.1 8B (fast), Llama 4 Scout (vision), Mixtral 8×7B (long context), Gemma 2 9B. Auto Routing fires when the user picks "⚡ 自動路由" or uploads an image.
+1. Auto Routing — router.py picks one of 5 Groq models per request (vision / fast / long-context / default) based on payload signals.
 
-2. Multimodal
-   Drag-and-drop image upload in the chat box. The file is base64-encoded and sent inside an OpenAI-format image_url content array, then routed to Llama 4 Scout vision model. The image is also persisted to static/uploads/ so re-opening the conversation re-renders it.
+2. Multimodal — Drag-drop image upload, base64-encoded into an OpenAI-format image_url array, auto-routed to Llama 4 Scout vision model.
 
-3. Long-term Memory
-   memory.py backs an SQLite store of facts, preferences, and instructions. After every user turn, an 8B background thread runs extract_and_store() to harvest new facts (USER turns only — assistant suggestions are filtered out). Before every new turn, build_context() searches with hybrid CJK-bigram + ASCII tokenization and injects the top-5 relevant memories into the system prompt. Manageable via Ctrl+M.
+3. Long-term Memory — memory.py backs an SQLite store. A background 8B thread extracts facts from USER turns only; before each turn, top-5 relevant memories are injected into the system prompt via hybrid CJK-bigram + ASCII tokenization.
 
-4. Tool Use + MCP
-   A standalone mcp_server.py subprocess speaks JSON-RPC over stdio using the official mcp Python SDK. It exposes 23 tools across 8 modules. The backend's tools.agentic_stream() runs a multi-round function-calling loop, routing every tool invocation through mcp_client.call_tool(). If MCP is offline, it falls back to local Python implementations.
+4. Tool Use + MCP — mcp_server.py subprocess speaks JSON-RPC over stdio using the official mcp SDK and exposes 23 tools. tools.agentic_stream() runs a multi-round function-calling loop with local fallback if MCP is offline.
 
-5. Other Useful Functions
-   (a) Multi-provider — OpenAI / Claude / OpenRouter / DeepSeek / Together / Mistral / Ollama / LM Studio via providers.py
-   (b) Sandboxed Python interpreter with auto matplotlib capture
-   (c) Free image generation via Pollinations.ai (8 styles)
-   (d) Notion API integration (search, create, append, query database)
-   (e) Inline artifact preview for HTML, SVG, and Mermaid diagrams
-   (f) Analytics dashboard — 9 real-time charts on /dashboard
+5. Other Features — Multi-provider (OpenAI / Claude / OpenRouter / etc.), sandboxed Python interpreter with matplotlib capture, free image generation (Pollinations.ai), Notion API integration, inline HTML/SVG/Mermaid artifact preview, and a 9-chart analytics dashboard.
 
 
 23 MCP TOOLS (8 MODULES)
 
    Basic        calculator, get_datetime, web_search, get_weather
    Generation   generate_image (8 styles)
-   Filesystem   read_file, write_file, list_directory, search_files (sandboxed)
+   Filesystem   read_file, write_file, list_directory, search_files
    Web          fetch_url, github_search_repos, github_read_file, youtube_transcript
    Academic     arxiv_search, wikipedia_search
-   Finance      stock_price (Yahoo), crypto_price (CoinGecko)
+   Finance      stock_price, crypto_price
    Code         execute_python (sandboxed, captures matplotlib)
-   Notion       notion_search, notion_list_pages, notion_create_page,
-                notion_append_to_page, notion_query_database
-
-
-ROBUSTNESS HIGHLIGHTS
-
-• Rate-limit fallback — Groq free-tier TPM is 12,000. When a 17,000-token request hits a tool-call failure or HTTP 429, the loop drops the giant tool schemas and base behaviour but preserves the memory block, then retries on llama-3.1-8b-instant.
-
-• CJK memory search — A custom hybrid tokenizer emits bigrams for Chinese, enabling matches that would fail under whitespace splitting (e.g. "我喜歡吃什麼食物" correctly retrieves the stored "喜歡吃西瓜").
-
-• Memory hygiene — The extractor sees only role=='user' turns, so the model never mistakes an AI-listed example ("比如：香蕉、橙子…") for a user preference. Deduplication on content prevents duplicates from repeated turns.
+   Notion       search, list_pages, create_page, append_to_page, query_database
 
 
 TECH STACK
 
-   Python 3.10, Flask, SQLite, official mcp SDK (stdio transport), Groq API,
-   Vanilla JS, Chart.js, marked.js, highlight.js, KaTeX, Mermaid.js,
-   Pollinations.ai
+Python 3.10, Flask, SQLite, official mcp SDK, Groq API, Chart.js, marked.js, highlight.js, KaTeX, Mermaid.js, Pollinations.ai
