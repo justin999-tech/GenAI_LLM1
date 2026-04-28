@@ -5,10 +5,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 AVAILABLE_MODELS = [
-    {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B", "desc": "最強大・推薦"},
-    {"id": "llama-3.1-8b-instant",    "name": "Llama 3.1 8B",  "desc": "最快速"},
-    {"id": "mixtral-8x7b-32768",      "name": "Mixtral 8x7B",  "desc": "長上下文"},
-    {"id": "gemma2-9b-it",            "name": "Gemma 2 9B",    "desc": "Google"},
+    {"id": "auto",                          "name": "⚡ 自動路由",     "desc": "根據訊息類型自動選擇"},
+    {"id": "llama-3.3-70b-versatile",       "name": "Llama 3.3 70B",  "desc": "最強大・推薦"},
+    {"id": "llama-3.1-8b-instant",          "name": "Llama 3.1 8B",   "desc": "最快速"},
+    {"id": "meta-llama/llama-4-scout-17b-16e-instruct", "name": "Llama 4 Scout (Vision)", "desc": "圖像分析"},
+    {"id": "mixtral-8x7b-32768",            "name": "Mixtral 8x7B",   "desc": "長上下文"},
+    {"id": "gemma2-9b-it",                  "name": "Gemma 2 9B",     "desc": "Google"},
 ]
 
 def create_client():

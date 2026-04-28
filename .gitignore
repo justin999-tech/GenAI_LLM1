@@ -4,3 +4,12 @@ __pycache__/
 *.pyc
 conversations.json
 *.exe
+*.db
+*.log
+providers.json
+static/uploads/*
+!static/uploads/.gitkeep
+.playwright-mcp/
+demo_preview/
+code_workspace/
+safe_workspace/

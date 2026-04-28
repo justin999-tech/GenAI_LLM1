@@ -48,6 +48,10 @@
 
         <div class="conv-list" id="conv-list"></div>
 
+        <div id="mcp-status-bar" style="padding:6px 12px; font-size:11px; display:flex; align-items:center; gap:6px; border-top:1px solid var(--border-color, rgba(0,0,0,0.08)); opacity:0.85; cursor:default" title="MCP (Model Context Protocol) 連線狀態">
+            <span id="mcp-status-dot" style="width:8px; height:8px; border-radius:50%; background:#94a3b8; flex-shrink:0"></span>
+            <span id="mcp-status-text" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">MCP 連線中…</span>
+        </div>
         <div class="sidebar-footer">
             <div class="user-info">
                 <div class="avatar">J</div>
@@ -90,6 +94,16 @@
 
             <div class="header-actions">
                 <select id="model-select" class="model-select" title="選擇模型"></select>
+                <a class="icon-btn" href="/dashboard" target="_blank" title="對話分析儀表板" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+                    </svg>
+                </a>
+                <button class="icon-btn" onclick="toggleReasoningPanel()" title="思考過程面板" id="reasoning-toggle-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+                    </svg>
+                </button>
                 <button class="icon-btn" onclick="openStudio()" title="筆記工作區 (Ctrl+E)">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
@@ -136,6 +150,12 @@
 
         <div class="input-area">
             <div class="input-wrapper" id="input-wrapper">
+                <!-- Image preview strip (shown when image attached) -->
+                <div id="image-preview-strip" style="display:none; padding:8px 12px; border-bottom:1px solid var(--border-color, #e5e7eb); align-items:center; gap:10px; background:var(--bg-secondary, #f9fafb)">
+                    <img id="image-preview-thumb" style="max-height:64px; max-width:96px; border-radius:6px; object-fit:cover; border:1px solid var(--border-color, #e5e7eb)" />
+                    <span id="image-filename" style="font-size:12px; opacity:0.75; flex:1"></span>
+                    <button onclick="clearImage()" title="移除圖片" style="background:none; border:none; cursor:pointer; font-size:16px; opacity:0.6">✕</button>
+                </div>
                 <div class="input-box">
                     <textarea
                         id="user-input"
@@ -183,12 +203,27 @@
                             </div>
                         </div>
                         <button class="footer-btn footer-btn-html" onclick="insertQuickPrompt('html')" title="插入 HTML 預覽提示詞">🌐 網頁</button>
+                        <label class="footer-btn" for="image-upload" title="上傳圖片給 AI 分析（Vision）" style="cursor:pointer">📷 圖片</label>
+                        <input type="file" id="image-upload" accept="image/*" style="display:none" onchange="handleImageUpload(event)">
+                        <button class="footer-btn" onclick="openMemoryManager()" title="長期記憶管理 (Ctrl+M)">🧠 記憶</button>
+                        <button class="footer-btn" onclick="openToolsPanel()" title="工具測試 (23 個 MCP 工具)">🔧 工具</button>
+                        <button class="footer-btn" onclick="openProviderManager()" title="自訂 API 提供者">🔑 API</button>
                     </div>
                     <p class="disclaimer">AI 可能會犯錯，請自行查證重要資訊。</p>
                 </div>
             </div>
         </div>
     </main>
+
+    <!-- ── Reasoning Panel (Agent thinking steps) ─────────── -->
+    <div id="reasoning-panel" style="display:none;flex-direction:column;width:300px;background:var(--bg-primary,#fff);border-left:1px solid var(--border-color,rgba(99,102,241,0.18));padding:14px;overflow-y:auto;flex-shrink:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <h3 style="margin:0;font-size:14px;font-weight:600">🧠 思考過程</h3>
+            <button onclick="toggleReasoningPanel()" style="background:none;border:none;font-size:16px;cursor:pointer;opacity:0.6">✕</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted, #94a3b8);margin-bottom:10px">AI agent 的決策步驟即時顯示</div>
+        <div id="reasoning-steps" style="flex:1;overflow-y:auto"></div>
+    </div>
 
     <!-- ── Artifact Panel ──────────────────────────────────── -->
     <div class="artifact-panel" id="artifact-panel">
@@ -1137,6 +1172,7 @@ async function sendMessage() {
     const nowTime = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
     addMessage("user", message, true, nowTime);
     setLoading(true); isStreaming = true;
+    if (typeof clearReasoningSteps === "function") clearReasoningSteps();
 
     const messages  = document.getElementById("messages");
     const streamDiv = document.createElement("div");
@@ -1153,13 +1189,28 @@ async function sendMessage() {
     let fullContent = "", thinkingRemoved = false;
 
     try {
+        const reqBody = {
+            message: apiMessage, conversation_id: currentConvId,
+            model: currentModel, system_prompt: currentSysPrompt,
+        };
+        if (currentImageData) {
+            reqBody.image_data = currentImageData;
+            reqBody.image_type = currentImageType;
+            // Show the image inline in the user's message bubble.
+            const userBubble = streamDiv.previousElementSibling?.querySelector(".bubble");
+            if (userBubble) {
+                const img = document.createElement("img");
+                img.src = "data:" + currentImageType + ";base64," + currentImageData;
+                img.style.cssText = "max-height:160px; max-width:240px; border-radius:8px; margin-bottom:6px; display:block;";
+                userBubble.insertBefore(img, userBubble.firstChild);
+            }
+        }
         const response = await fetch("/chat/stream", {
             method: "POST", headers: {"Content-Type":"application/json"},
-            body: JSON.stringify({
-                message: apiMessage, conversation_id: currentConvId,
-                model: currentModel, system_prompt: currentSysPrompt,
-            }),
+            body: JSON.stringify(reqBody),
         });
+        // Reset image after send.
+        clearImage();
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -1173,6 +1224,33 @@ async function sendMessage() {
                 try {
                     const data = JSON.parse(line.slice(6));
                     if (data.conv_id) currentConvId = data.conv_id;
+                    if (data.routed_model) {
+                        renderRouteBadge(streamDiv, data.routed_model, data.route_reason || "auto");
+                    }
+                    if (data.memory_used) {
+                        renderMemoryBadge(streamDiv);
+                    }
+                    if (data.type === "reasoning") {
+                        pushReasoningStep(data.step || "");
+                    }
+                    if (data.type === "tool_call") {
+                        if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
+                        renderToolCallBadge(streamDiv, data.tool, data.args, data.id);
+                    }
+                    if (data.type === "tool_result") {
+                        updateToolCallBadge(streamDiv, data.id, data.result);
+                    }
+                    if (data.type === "tool_call_failed") {
+                        if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
+                        const note = document.createElement("div");
+                        note.style.cssText = "font-size:11px; opacity:0.6; margin-bottom:6px;";
+                        note.textContent = "⚠️ " + (data.message || "tool call failed");
+                        streamDiv.querySelector(".msg-content").insertBefore(note, streamBubble);
+                    }
+                    if (data.type === "error") {
+                        if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
+                        streamBubble.innerHTML = `<span style="color:#ef4444">${escapeHtml(data.message)}</span>`;
+                    }
                     if (data.content) {
                         if (!thinkingRemoved) { streamBubble.innerHTML = ""; thinkingRemoved = true; }
                         fullContent += data.content;
@@ -1809,6 +1887,488 @@ function copyStudio() {
     if (!content.trim()) { showToast("筆記是空的"); return; }
     navigator.clipboard.writeText(content).then(() => showToast("已複製全部內容"));
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Lab 2 v2 features: image upload, memory, tool badges, route badge,
+// MCP status, modals.
+// ════════════════════════════════════════════════════════════════════
+
+// ── Image upload state ──────────────────────────────────────────
+let currentImageData = null;   // base64 (no data: prefix)
+let currentImageType = null;   // mime type
+let currentImageName = null;
+
+// ── Reasoning panel state ───────────────────────────────────────
+let reasoningPanelOpen = localStorage.getItem("reasoning_open") === "1";
+
+// Apply saved state on load
+setTimeout(() => {
+    const panel = document.getElementById("reasoning-panel");
+    if (panel) panel.style.display = reasoningPanelOpen ? "flex" : "none";
+}, 100);
+
+function toggleReasoningPanel() {
+    reasoningPanelOpen = !reasoningPanelOpen;
+    localStorage.setItem("reasoning_open", reasoningPanelOpen ? "1" : "0");
+    document.getElementById("reasoning-panel").style.display = reasoningPanelOpen ? "flex" : "none";
+}
+
+function pushReasoningStep(text) {
+    const panel = document.getElementById("reasoning-steps");
+    if (!panel) return;
+    const time = new Date().toLocaleTimeString("zh-TW", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+    const step = document.createElement("div");
+    step.style.cssText = "padding:8px 12px;margin-bottom:6px;background:rgba(99,102,241,0.08);border-left:3px solid #6366f1;border-radius:6px;font-size:12px;animation:fadeIn 0.3s";
+    step.innerHTML = `<span style="opacity:0.6;font-size:10px">${time}</span><br>${escapeHtml(text)}`;
+    panel.appendChild(step);
+    panel.scrollTop = panel.scrollHeight;
+}
+
+function clearReasoningSteps() {
+    const panel = document.getElementById("reasoning-steps");
+    if (panel) panel.innerHTML = "";
+}
+
+// ── Render [IMAGE]url[/IMAGE] markers as actual images ───────────
+function processImageMarkers(html) {
+    return html.replace(/\[IMAGE\](\/static\/uploads\/[^\[\]]+)\[\/IMAGE\]/g,
+        (_, url) => `<img src="${url}" class="generated-image" style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;cursor:pointer;border:1px solid var(--border-color, rgba(99,102,241,0.3));" onclick="window.open('${url}','_blank')" />`);
+}
+
+// Override safeMarkdown to also process image markers
+const _originalSafeMarkdown = window.safeMarkdown;
+if (typeof _originalSafeMarkdown === "function") {
+    window.safeMarkdown = function(text) {
+        let html = _originalSafeMarkdown(text);
+        return processImageMarkers(html);
+    };
+}
+
+function handleImageUpload(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+        showToast("請選擇圖片檔");
+        return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+        showToast("圖片不能超過 5MB");
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const dataUrl = e.target.result;
+        currentImageData = dataUrl.split(",")[1];
+        currentImageType = file.type;
+        currentImageName = file.name;
+        document.getElementById("image-preview-thumb").src = dataUrl;
+        document.getElementById("image-filename").textContent = `${file.name} (${(file.size/1024).toFixed(0)} KB)`;
+        document.getElementById("image-preview-strip").style.display = "flex";
+        showToast("📷 圖片已附加，將自動使用 Vision 模型");
+    };
+    reader.readAsDataURL(file);
+    ev.target.value = "";
+}
+
+function clearImage() {
+    currentImageData = null;
+    currentImageType = null;
+    currentImageName = null;
+    document.getElementById("image-preview-strip").style.display = "none";
+    document.getElementById("image-upload").value = "";
+}
+
+// ── Tool / route / memory badge rendering ──────────────────────
+function renderToolCallBadge(streamDiv, toolName, args, callId) {
+    const wrap = streamDiv.querySelector(".msg-content");
+    let host = wrap.querySelector(".tool-call-list");
+    if (!host) {
+        host = document.createElement("div");
+        host.className = "tool-call-list";
+        host.style.cssText = "display:flex; flex-direction:column; gap:6px; margin-bottom:8px;";
+        wrap.insertBefore(host, wrap.firstChild);
+    }
+    const badge = document.createElement("div");
+    badge.className = "tool-call-badge";
+    badge.dataset.id = callId;
+    badge.style.cssText = "padding:8px 12px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.25); font-size:12px; font-family: ui-monospace, monospace;";
+    badge.innerHTML = `
+        <div style="display:flex; align-items:center; gap:8px">
+            <span>🔧</span>
+            <strong>${escapeHtml(toolName)}</strong>
+            <span class="tool-status" style="margin-left:auto; opacity:0.7">執行中…</span>
+        </div>
+        <div class="tool-args" style="margin-top:4px; font-size:11px; opacity:0.75; word-break:break-word;">
+            ${escapeHtml(JSON.stringify(args))}
+        </div>
+        <div class="tool-result" style="display:none; margin-top:6px; padding-top:6px; border-top:1px dashed rgba(99,102,241,0.25); white-space:pre-wrap; word-break:break-word;"></div>`;
+    host.appendChild(badge);
+    return badge;
+}
+
+function updateToolCallBadge(streamDiv, callId, result) {
+    const badge = streamDiv.querySelector(`.tool-call-badge[data-id="${callId}"]`);
+    if (!badge) return;
+    badge.querySelector(".tool-status").textContent = "✅ 完成";
+    badge.querySelector(".tool-status").style.opacity = 1;
+    const r = badge.querySelector(".tool-result");
+    r.style.display = "block";
+    // Render [IMAGE]url[/IMAGE] markers as actual images.
+    const escaped = escapeHtml(result);
+    const withImages = escaped.replace(/\[IMAGE\](\/static\/uploads\/[^\[\]]+)\[\/IMAGE\]/g,
+        (_, url) => `<br><img src="${url}" style="max-width:100%;max-height:300px;border-radius:6px;cursor:pointer" onclick="window.open('${url}','_blank')" />`);
+    r.innerHTML = withImages;
+    badge.style.background = "rgba(34,197,94,0.06)";
+    badge.style.borderColor = "rgba(34,197,94,0.3)";
+}
+
+function renderRouteBadge(streamDiv, model, reason) {
+    const wrap = streamDiv.querySelector(".msg-content");
+    const badge = document.createElement("span");
+    badge.className = "route-badge";
+    badge.style.cssText = "display:inline-block; font-size:10.5px; padding:2px 8px; border-radius:10px; background:rgba(99,102,241,0.1); color:#6366f1; margin-bottom:6px;";
+    const shortName = model.split("/").pop().replace(/-versatile|-instant|-preview/g, "");
+    badge.textContent = `⚡ ${shortName} · ${reason}`;
+    badge.title = `自動路由：${model}`;
+    wrap.insertBefore(badge, wrap.firstChild);
+}
+
+function renderMemoryBadge(streamDiv) {
+    const wrap = streamDiv.querySelector(".msg-content");
+    const badge = document.createElement("span");
+    badge.className = "memory-badge";
+    badge.style.cssText = "display:inline-block; font-size:10.5px; padding:2px 8px; border-radius:10px; background:rgba(168,85,247,0.1); color:#a855f7; margin-bottom:6px; margin-left:6px;";
+    badge.textContent = "🧠 已注入記憶";
+    badge.title = "已根據訊息檢索並注入長期記憶";
+    wrap.insertBefore(badge, wrap.firstChild);
+}
+
+// ── Memory manager modal ────────────────────────────────────────
+async function openMemoryManager() {
+    let modal = document.getElementById("memory-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "memory-modal";
+        modal.style.cssText = "position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; opacity:1; visibility:visible;";
+        modal.innerHTML = `
+            <div style="background:var(--bg-primary, #fff); border-radius:14px; padding:22px; width:min(560px, 92vw); max-height:80vh; overflow:auto; box-shadow:0 12px 40px rgba(0,0,0,0.18);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:18px;">🧠 長期記憶管理</h3>
+                    <button onclick="closeMemoryManager()" style="background:none; border:none; font-size:18px; cursor:pointer; opacity:0.6">✕</button>
+                </div>
+                <p style="font-size:13px; opacity:0.7; margin:0 0 14px;">AI 會自動從對話中提取使用者偏好/事實。每次對話前，相關記憶會自動注入。</p>
+                <div style="display:flex; gap:6px; margin-bottom:14px;">
+                    <input type="text" id="new-memory-input" placeholder="例如：使用者偏好 Python，回答用繁體中文" style="flex:1; padding:8px 10px; border:1px solid var(--border-color, #e5e7eb); border-radius:8px; font-size:13px;">
+                    <select id="new-memory-cat" style="padding:8px 10px; border:1px solid var(--border-color, #e5e7eb); border-radius:8px; font-size:13px;">
+                        <option value="fact">事實</option>
+                        <option value="preference">偏好</option>
+                        <option value="instruction">指令</option>
+                    </select>
+                    <button onclick="addMemoryManual()" style="padding:8px 14px; background:#6366f1; color:#fff; border:none; border-radius:8px; cursor:pointer; font-size:13px;">新增</button>
+                </div>
+                <div id="memory-list-container" style="display:flex; flex-direction:column; gap:6px;"></div>
+                <button onclick="clearAllMemories()" style="margin-top:14px; padding:6px 12px; background:transparent; color:#ef4444; border:1px solid #ef4444; border-radius:8px; cursor:pointer; font-size:12px;">清空全部</button>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) closeMemoryManager();
+        });
+    }
+    modal.style.display = "flex";
+    await refreshMemoryList();
+}
+
+function closeMemoryManager() {
+    const m = document.getElementById("memory-modal");
+    if (m) m.style.display = "none";
+}
+
+async function refreshMemoryList() {
+    try {
+        const r = await fetch("/memory");
+        const memories = await r.json();
+        const container = document.getElementById("memory-list-container");
+        if (!container) return;
+        if (memories.length === 0) {
+            container.innerHTML = `<div style="padding:20px; text-align:center; opacity:0.5; font-size:13px;">還沒有記憶。AI 會在你對話時自動建立。</div>`;
+            return;
+        }
+        container.innerHTML = memories.map(m => `
+            <div style="display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--border-color, #e5e7eb); border-radius:8px; font-size:13px;">
+                <span style="background:rgba(99,102,241,0.12); color:#6366f1; padding:2px 8px; border-radius:10px; font-size:10.5px; flex-shrink:0;">${escapeHtml(m.category)}</span>
+                <span style="flex:1; word-break:break-word;">${escapeHtml(m.content)}</span>
+                <span style="opacity:0.5; font-size:10.5px;">×${m.access_count}</span>
+                <button onclick="deleteMemoryItem('${m.id}')" style="background:none; border:none; cursor:pointer; opacity:0.5; font-size:14px;" title="刪除">🗑️</button>
+            </div>`).join("");
+    } catch (e) { console.error(e); }
+}
+
+async function addMemoryManual() {
+    const inp = document.getElementById("new-memory-input");
+    const cat = document.getElementById("new-memory-cat");
+    const content = inp.value.trim();
+    if (!content) return;
+    const r = await fetch("/memory", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({content, category: cat.value}),
+    });
+    const j = await r.json();
+    if (j.status === "duplicate") showToast("已存在相同記憶");
+    else showToast("✅ 記憶已新增");
+    inp.value = "";
+    refreshMemoryList();
+}
+
+async function deleteMemoryItem(id) {
+    await fetch(`/memory/${id}`, {method: "DELETE"});
+    refreshMemoryList();
+}
+
+async function clearAllMemories() {
+    if (!confirm("確定清空所有記憶嗎？")) return;
+    await fetch("/memory/clear", {method: "POST"});
+    refreshMemoryList();
+    showToast("已清空全部記憶");
+}
+
+// ── Tools panel ────────────────────────────────────────────────
+async function openToolsPanel() {
+    let modal = document.getElementById("tools-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "tools-modal";
+        modal.style.cssText = "position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; opacity:1; visibility:visible;";
+        modal.innerHTML = `
+            <div style="background:var(--bg-primary, #fff); border-radius:14px; padding:22px; width:min(640px, 92vw); max-height:80vh; overflow:auto; box-shadow:0 12px 40px rgba(0,0,0,0.18);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:18px;">🔧 工具測試（透過 MCP 執行）</h3>
+                    <button onclick="closeToolsPanel()" style="background:none; border:none; font-size:18px; cursor:pointer; opacity:0.6">✕</button>
+                </div>
+                <p style="font-size:13px; opacity:0.7; margin:0 0 14px;">直接呼叫 MCP server 上的工具，繞過 LLM。</p>
+                <div id="tools-list-container"></div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) closeToolsPanel();
+        });
+    }
+    modal.style.display = "flex";
+    const r = await fetch("/tools");
+    const tools = await r.json();
+    const container = document.getElementById("tools-list-container");
+    container.innerHTML = tools.map(t => {
+        const props = t.parameters?.properties || {};
+        const inputs = Object.entries(props).map(([name, schema]) =>
+            `<input type="text" data-arg="${name}" placeholder="${escapeHtml(name)}: ${escapeHtml(schema.description || schema.type || '')}" style="padding:6px 10px; border:1px solid var(--border-color, #e5e7eb); border-radius:6px; font-size:12px; width:100%;">`
+        ).join("");
+        return `
+            <div class="tool-card" style="padding:12px; border:1px solid var(--border-color, #e5e7eb); border-radius:10px; margin-bottom:10px;">
+                <div style="font-weight:600; margin-bottom:4px;">${escapeHtml(t.name)}</div>
+                <div style="font-size:12px; opacity:0.7; margin-bottom:8px;">${escapeHtml(t.description)}</div>
+                <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;">${inputs}</div>
+                <button onclick="executeTool('${t.name}', this)" style="padding:6px 14px; background:#6366f1; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px;">執行</button>
+                <pre class="tool-output" style="display:none; margin-top:8px; padding:8px; background:rgba(0,0,0,0.04); border-radius:6px; font-size:12px; white-space:pre-wrap; word-break:break-word;"></pre>
+            </div>`;
+    }).join("");
+}
+
+function closeToolsPanel() {
+    const m = document.getElementById("tools-modal");
+    if (m) m.style.display = "none";
+}
+
+async function executeTool(toolName, btn) {
+    const card = btn.closest(".tool-card");
+    const inputs = card.querySelectorAll("input[data-arg]");
+    const args = {};
+    inputs.forEach(inp => {
+        if (inp.value.trim()) {
+            const v = inp.value.trim();
+            args[inp.dataset.arg] = isNaN(v) || v === "" ? v : Number(v);
+        }
+    });
+    const out = card.querySelector(".tool-output");
+    out.style.display = "block";
+    out.textContent = "執行中…";
+    try {
+        const r = await fetch("/tools/execute", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({tool: toolName, args}),
+        });
+        const j = await r.json();
+        out.textContent = (j.via_mcp ? "[MCP] " : "[Local] ") + (j.result || j.error || JSON.stringify(j));
+    } catch (e) {
+        out.textContent = "錯誤: " + e;
+    }
+}
+
+// ── MCP status indicator ────────────────────────────────────────
+async function refreshMcpStatus() {
+    try {
+        const r = await fetch("/mcp/status");
+        const s = await r.json();
+        const dot = document.getElementById("mcp-status-dot");
+        const txt = document.getElementById("mcp-status-text");
+        if (s.connected) {
+            dot.style.background = "#22c55e";
+            txt.textContent = `MCP 已連線 · ${s.tools.length} 個工具`;
+        } else {
+            dot.style.background = "#f59e0b";
+            txt.textContent = s.error ? `MCP 失敗（本地後備）` : "MCP 啟動中…";
+        }
+    } catch {
+        const dot = document.getElementById("mcp-status-dot");
+        if (dot) dot.style.background = "#ef4444";
+    }
+}
+setInterval(refreshMcpStatus, 5000);
+setTimeout(refreshMcpStatus, 800);
+
+// ── API Provider Manager ─────────────────────────────────────────
+async function openProviderManager() {
+    let modal = document.getElementById("provider-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "provider-modal";
+        modal.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;opacity:1;visibility:visible";
+        modal.innerHTML = `
+            <div style="background:var(--bg-primary,#fff);border-radius:14px;padding:22px;width:min(640px,92vw);max-height:85vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,0.18)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <h3 style="margin:0;font-size:18px">🔑 API 提供者管理</h3>
+                    <button onclick="closeProviderManager()" style="background:none;border:none;font-size:18px;cursor:pointer;opacity:0.6">✕</button>
+                </div>
+                <p style="font-size:13px;opacity:0.7;margin:0 0 14px">加入你自己的 API key，使用 OpenAI、Claude、OpenRouter、DeepSeek 等模型。Key 存在伺服器端 providers.json，已加入 .gitignore。</p>
+                <h4 style="margin:14px 0 8px;font-size:13px">新增提供者</h4>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                    <select id="provider-template" onchange="onProviderTemplateChange()" style="padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px">
+                        <option value="">-- 選擇預設 --</option>
+                    </select>
+                    <input id="provider-name" placeholder="顯示名稱（自訂）" style="padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px">
+                </div>
+                <input id="provider-base-url" placeholder="Base URL，例如 https://api.openai.com/v1" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
+                <input id="provider-api-key" type="password" placeholder="API key（不會顯示）" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
+                <input id="provider-models" placeholder="模型 ID 用逗號分隔，例如 gpt-4o, gpt-4o-mini" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color,#e5e7eb);font-size:12px;margin-bottom:8px">
+                <button onclick="addProvider()" style="padding:8px 18px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">新增</button>
+                <h4 style="margin:18px 0 8px;font-size:13px">已啟用的提供者</h4>
+                <div id="provider-list-container"></div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener("click", (e) => { if (e.target === modal) closeProviderManager(); });
+
+        // Load templates
+        const tpl = await (await fetch("/providers/templates")).json();
+        const sel = document.getElementById("provider-template");
+        for (const [key, t] of Object.entries(tpl)) {
+            if (key === "groq") continue;
+            const opt = document.createElement("option");
+            opt.value = key;
+            opt.textContent = t.label;
+            sel.appendChild(opt);
+        }
+        window._providerTemplates = tpl;
+    }
+    modal.style.display = "flex";
+    refreshProviderList();
+}
+
+function closeProviderManager() {
+    const m = document.getElementById("provider-modal");
+    if (m) m.style.display = "none";
+}
+
+function onProviderTemplateChange() {
+    const sel = document.getElementById("provider-template");
+    const tpl = (window._providerTemplates || {})[sel.value];
+    if (!tpl) return;
+    document.getElementById("provider-name").value = tpl.label;
+    document.getElementById("provider-base-url").value = tpl.base_url || "";
+    document.getElementById("provider-models").value = (tpl.models || []).join(", ");
+}
+
+async function refreshProviderList() {
+    const list = await (await fetch("/providers")).json();
+    const c = document.getElementById("provider-list-container");
+    if (!list.length) {
+        c.innerHTML = `<div style="padding:14px;text-align:center;opacity:0.5;font-size:12px">尚未新增提供者，預設使用內建 Groq。</div>`;
+        return;
+    }
+    c.innerHTML = list.map(p => {
+        const ledger = p.last_test_ok === true ? "🟢 OK" : p.last_test_ok === false ? "🔴 失敗" : "⚪ 未測試";
+        return `
+            <div style="padding:10px;border:1px solid var(--border-color,#e5e7eb);border-radius:8px;margin-bottom:6px;font-size:12px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                    <strong>${escapeHtml(p.name)}</strong>
+                    <span style="opacity:0.6">[${escapeHtml(p.type)}]</span>
+                    <span>${ledger}</span>
+                    <button onclick="testProvider('${p.id}')" style="margin-left:auto;padding:3px 10px;background:#6366f1;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">測試</button>
+                    <button onclick="deleteProvider('${p.id}')" style="padding:3px 10px;background:#ef4444;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">刪除</button>
+                </div>
+                <div style="opacity:0.7">${escapeHtml(p.base_url)}</div>
+                <div style="opacity:0.6">Key: ${escapeHtml(p.api_key)} · Models: ${(p.models || []).join(", ")}</div>
+                ${p.last_test_message ? `<div style="opacity:0.6;font-style:italic;margin-top:4px">${escapeHtml(p.last_test_message)}</div>` : ""}
+            </div>`;
+    }).join("");
+}
+
+async function addProvider() {
+    const name = document.getElementById("provider-name").value.trim();
+    const type = document.getElementById("provider-template").value || "openai";
+    const base_url = document.getElementById("provider-base-url").value.trim();
+    const api_key = document.getElementById("provider-api-key").value.trim();
+    const models = document.getElementById("provider-models").value.split(",").map(s => s.trim()).filter(Boolean);
+    if (!name || !base_url || !api_key) {
+        showToast("⚠️ name / base_url / api_key 都要填");
+        return;
+    }
+    const r = await fetch("/providers", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name, type, base_url, api_key, models}),
+    });
+    const j = await r.json();
+    if (j.id) {
+        showToast("✅ 提供者已新增，重新載入模型清單");
+        document.getElementById("provider-api-key").value = "";
+        await refreshProviderList();
+        await reloadModelSelect();
+    } else {
+        showToast("❌ " + (j.error || "新增失敗"));
+    }
+}
+
+async function testProvider(pid) {
+    showToast("測試中…");
+    const r = await fetch(`/providers/${pid}/test`, {method: "POST"});
+    const j = await r.json();
+    showToast(j.ok ? `✅ ${j.message}` : `❌ ${j.message}`);
+    refreshProviderList();
+}
+
+async function deleteProvider(pid) {
+    if (!confirm("確定刪除嗎？")) return;
+    await fetch(`/providers/${pid}`, {method: "DELETE"});
+    refreshProviderList();
+    reloadModelSelect();
+}
+
+async function reloadModelSelect() {
+    const sel = document.getElementById("model-select");
+    if (!sel) return;
+    const models = await (await fetch("/models")).json();
+    sel.innerHTML = models.map(m => {
+        const label = m.provider_name ? `${m.name} (${m.provider_name})` : m.name;
+        return `<option value="${m.id}">${label} — ${m.desc || ""}</option>`;
+    }).join("");
+    // Try to keep current selection
+    if (window.currentModel) sel.value = window.currentModel;
+}
+
+// ── Keyboard shortcut for memory manager ────────────────────────
+document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m" && !e.shiftKey) {
+        e.preventDefault();
+        openMemoryManager();
+    }
+});
 </script>
 </body>
 </html>

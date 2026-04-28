@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>對話分析儀表板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --primary: #6366f1; --pink: #ec4899; --green: #22c55e;
+    --orange: #f59e0b; --bg: #0f172a; --card: #1e293b;
+    --text: #f1f5f9; --muted: #94a3b8;
+    --border: rgba(99,102,241,0.18);
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;
+    background:var(--bg); color:var(--text); margin:0; padding:28px;
+    min-height:100vh;
+  }
+  .top-bar{display:flex;align-items:center;gap:16px;margin-bottom:6px}
+  h1{
+    font-size:30px;margin:0;font-weight:800;
+    background:linear-gradient(120deg,#a5b4fc,#ec4899);
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  }
+  .back-btn{
+    margin-left:auto;background:var(--card);color:var(--text);
+    padding:8px 14px;border-radius:8px;border:1px solid var(--border);
+    cursor:pointer;text-decoration:none;font-size:13px;
+  }
+  .back-btn:hover{background:rgba(99,102,241,0.15)}
+  .sub{color:var(--muted);margin-bottom:24px;font-size:13px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .stat-card{
+    background:var(--card);border:1px solid var(--border);border-radius:12px;
+    padding:16px 20px;position:relative;overflow:hidden;
+  }
+  .stat-card::after{
+    content:"";position:absolute;top:-40%;right:-40%;
+    width:160px;height:160px;
+    background:radial-gradient(circle,rgba(99,102,241,0.18),transparent);
+    border-radius:50%;pointer-events:none;
+  }
+  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .stat-value{font-size:28px;font-weight:800;margin-top:2px}
+  .stat-trend{font-size:11px;color:var(--green);margin-top:2px}
+  .grid{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .card h3{margin:0 0 8px;font-size:14px;font-weight:600}
+  .card .desc{font-size:11px;color:var(--muted);margin-bottom:12px}
+  canvas{max-height:260px}
+  .heatmap-grid{
+    display:grid;grid-template-columns:repeat(53,1fr);gap:3px;margin-top:8px;
+  }
+  .hm{aspect-ratio:1;border-radius:2px;background:rgba(99,102,241,0.08);transition:transform .1s}
+  .hm:hover{transform:scale(1.4);z-index:2}
+  .hm.l1{background:rgba(99,102,241,0.25)}
+  .hm.l2{background:rgba(99,102,241,0.45)}
+  .hm.l3{background:rgba(99,102,241,0.7)}
+  .hm.l4{background:#6366f1}
+  .legend{display:flex;gap:4px;align-items:center;margin-top:6px;font-size:10px;color:var(--muted)}
+  .similarity-row{display:flex;gap:8px;margin-bottom:6px;align-items:center;font-size:12px}
+  .similarity-bar{flex:1;height:22px;background:rgba(99,102,241,0.1);border-radius:4px;position:relative;overflow:hidden}
+  .similarity-fill{height:100%;background:linear-gradient(90deg,#6366f1,#ec4899);display:flex;align-items:center;justify-content:flex-end;padding-right:8px;color:#fff;font-size:10px;font-weight:600}
+  .topic{display:inline-block;padding:4px 12px;border-radius:14px;font-size:12px;font-weight:500;margin:3px;cursor:default}
+  .empty{padding:30px;text-align:center;color:var(--muted);font-size:13px}
+  @media(max-width:900px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .grid,.grid-3{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>📊 對話分析儀表板</h1>
+  <a class="back-btn" href="/">← 回對話</a>
+</div>
+<div class="sub">即時資料 · 每 60 秒自動更新</div>
+
+<div class="stats" id="stats-row"></div>
+
+<div class="grid">
+  <div class="card">
+    <h3>📈 Token 使用趨勢（近 14 天）</h3>
+    <div class="desc">輸入 / 輸出 token 估算</div>
+    <canvas id="tokenChart"></canvas>
+  </div>
+  <div class="card">
+    <h3>🥧 模型使用分布</h3>
+    <div class="desc">每個對話用了哪個模型</div>
+    <canvas id="modelChart"></canvas>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <h3>🔥 對話活躍熱力圖（過去 365 天）</h3>
+  <div class="desc">GitHub-style activity calendar</div>
+  <div id="heatmap" class="heatmap-grid"></div>
+  <div class="legend">少 <span class="hm" style="width:10px;height:10px"></span><span class="hm l1" style="width:10px;height:10px"></span><span class="hm l2" style="width:10px;height:10px"></span><span class="hm l3" style="width:10px;height:10px"></span><span class="hm l4" style="width:10px;height:10px"></span> 多</div>
+</div>
+
+<div class="grid-3">
+  <div class="card">
+    <h3>🔧 工具呼叫排行</h3>
+    <div class="desc">哪個 MCP 工具最常被使用</div>
+    <canvas id="toolsChart"></canvas>
+    <div id="tools-empty" class="empty" style="display:none">還沒有工具呼叫紀錄</div>
+  </div>
+  <div class="card">
+    <h3>🌐 主題分群（TF-IDF）</h3>
+    <div class="desc">對話自動分類</div>
+    <div id="topics" style="margin-top:6px"></div>
+  </div>
+  <div class="card">
+    <h3>📐 對話相似度 Top 5</h3>
+    <div class="desc">內容最相似的對話組</div>
+    <div id="similarity"></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>☁️ 高頻關鍵詞</h3>
+    <div class="desc">你最常用的詞彙</div>
+    <div id="wordcloud" style="margin-top:8px;line-height:1.8"></div>
+  </div>
+  <div class="card">
+    <h3>⏱️ 工具平均延遲（毫秒）</h3>
+    <div class="desc">每個工具的執行速度</div>
+    <canvas id="latencyChart"></canvas>
+    <div id="latency-empty" class="empty" style="display:none">尚無延遲資料</div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.borderColor = 'rgba(148,163,184,0.1)';
+
+const TOPIC_COLORS = [
+  ['rgba(99,102,241,0.2)', '#a5b4fc'],
+  ['rgba(236,72,153,0.2)', '#f9a8d4'],
+  ['rgba(245,158,11,0.2)', '#fcd34d'],
+  ['rgba(34,197,94,0.2)', '#86efac'],
+  ['rgba(168,85,247,0.2)', '#d8b4fe'],
+  ['rgba(14,165,233,0.2)', '#7dd3fc'],
+  ['rgba(239,68,68,0.2)', '#fca5a5'],
+  ['rgba(20,184,166,0.2)', '#5eead4'],
+];
+
+let charts = {};
+
+async function fetchJson(url) {
+  try { return await (await fetch(url)).json(); }
+  catch { return null; }
+}
+
+async function loadOverview() {
+  const d = await fetchJson('/api/analytics/overview');
+  if (!d) return;
+  const stats = [
+    {label:'總對話數', value: d.total_conversations, trend:'累計'},
+    {label:'總訊息數', value: d.total_messages, trend:'user + assistant'},
+    {label:'估算 Tokens', value: ((d.total_tokens||0)/1000).toFixed(1) + 'K', trend:'≈ Groq 免費'},
+    {label:'工具呼叫', value: d.tool_calls, trend:'透過 MCP'},
+  ];
+  document.getElementById('stats-row').innerHTML = stats.map(s => `
+    <div class="stat-card">
+      <div class="stat-label">${s.label}</div>
+      <div class="stat-value">${s.value}</div>
+      <div class="stat-trend">${s.trend}</div>
+    </div>`).join('');
+}
+
+async function loadTokens() {
+  const d = await fetchJson('/api/analytics/tokens?days=14');
+  if (!d) return;
+  if (charts.token) charts.token.destroy();
+  charts.token = new Chart(document.getElementById('tokenChart'), {
+    type: 'line',
+    data: {
+      labels: d.labels.map(s => s.slice(5)),
+      datasets: [
+        {label:'Input', data:d.input, borderColor:'#6366f1', backgroundColor:'rgba(99,102,241,0.12)', tension:0.4, fill:true},
+        {label:'Output', data:d.output, borderColor:'#ec4899', backgroundColor:'rgba(236,72,153,0.12)', tension:0.4, fill:true},
+      ],
+    },
+    options: {responsive:true, plugins:{legend:{position:'bottom'}}},
+  });
+}
+
+async function loadModels() {
+  const d = await fetchJson('/api/analytics/models');
+  if (!d) return;
+  if (charts.model) charts.model.destroy();
+  if (!d.labels.length) return;
+  charts.model = new Chart(document.getElementById('modelChart'), {
+    type: 'doughnut',
+    data: {
+      labels: d.labels.map(l => l.length > 25 ? l.slice(0,22)+'…' : l),
+      datasets: [{data:d.values, backgroundColor:['#6366f1','#ec4899','#22c55e','#f59e0b','#a855f7','#0ea5e9','#ef4444']}],
+    },
+    options: {plugins:{legend:{position:'bottom', labels:{boxWidth:10, font:{size:11}}}}},
+  });
+}
+
+async function loadHeatmap() {
+  const d = await fetchJson('/api/analytics/heatmap?days=365');
+  if (!d) return;
+  const max = d.max || 1;
+  const hm = document.getElementById('heatmap');
+  hm.innerHTML = d.days.map(s => {
+    let cls = 'hm';
+    if (s.count > 0) {
+      const ratio = s.count / max;
+      cls += ' ' + (ratio > 0.75 ? 'l4' : ratio > 0.5 ? 'l3' : ratio > 0.25 ? 'l2' : 'l1');
+    }
+    return `<div class="${cls}" title="${s.date}: ${s.count}"></div>`;
+  }).join('');
+}
+
+async function loadTools() {
+  const d = await fetchJson('/api/analytics/tools');
+  if (!d || !d.labels.length) {
+    document.getElementById('tools-empty').style.display = 'block';
+    return;
+  }
+  document.getElementById('tools-empty').style.display = 'none';
+  if (charts.tools) charts.tools.destroy();
+  charts.tools = new Chart(document.getElementById('toolsChart'), {
+    type: 'bar',
+    data: {labels: d.labels, datasets: [{label:'呼叫次數', data: d.values, backgroundColor:'#6366f1'}]},
+    options: {indexAxis:'y', plugins:{legend:{display:false}}},
+  });
+}
+
+async function loadTopics() {
+  const d = await fetchJson('/api/analytics/topics');
+  if (!d || !d.length) {
+    document.getElementById('topics').innerHTML = `<div class="empty">需要更多對話來分群</div>`;
+    return;
+  }
+  document.getElementById('topics').innerHTML = d.map((t, i) => {
+    const [bg, color] = TOPIC_COLORS[i % TOPIC_COLORS.length];
+    return `<span class="topic" style="background:${bg};color:${color}" title="${(t.samples||[]).join(' / ')}">📌 ${t.label} · ${t.count} 篇</span>`;
+  }).join('');
+}
+
+async function loadSimilarity() {
+  const d = await fetchJson('/api/analytics/similarity');
+  if (!d || !d.length) {
+    document.getElementById('similarity').innerHTML = `<div class="empty">需要更多對話以計算相似度</div>`;
+    return;
+  }
+  document.getElementById('similarity').innerHTML = d.map(p => {
+    const pct = Math.round(p.score * 100);
+    return `
+      <div class="similarity-row">
+        <span style="width:120px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.a} ↔ ${p.b}">${p.a}↔${p.b}</span>
+        <div class="similarity-bar"><div class="similarity-fill" style="width:${pct}%">${pct}%</div></div>
+      </div>`;
+  }).join('');
+}
+
+async function loadWordcloud() {
+  const d = await fetchJson('/api/analytics/wordcloud');
+  if (!d || !d.length) {
+    document.getElementById('wordcloud').innerHTML = `<div class="empty">沒有資料</div>`;
+    return;
+  }
+  const max = d[0].count;
+  const palette = ['#a5b4fc', '#f9a8d4', '#fcd34d', '#86efac', '#7dd3fc', '#d8b4fe', '#fca5a5', '#5eead4'];
+  document.getElementById('wordcloud').innerHTML = d.map((w, i) => {
+    const size = Math.max(10, Math.min(36, 10 + (w.count / max) * 26));
+    const color = palette[i % palette.length];
+    return `<span style="font-size:${size}px;color:${color};font-weight:${size > 20 ? 700 : 500};margin-right:8px;display:inline-block" title="${w.count} 次">${w.word}</span>`;
+  }).join('');
+}
+
+async function loadLatency() {
+  const d = await fetchJson('/api/analytics/latency');
+  if (!d || !d.labels.length) {
+    document.getElementById('latency-empty').style.display = 'block';
+    return;
+  }
+  document.getElementById('latency-empty').style.display = 'none';
+  if (charts.latency) charts.latency.destroy();
+  charts.latency = new Chart(document.getElementById('latencyChart'), {
+    type: 'bar',
+    data: {labels: d.labels, datasets: [{label:'平均 ms', data: d.values, backgroundColor:'#a855f7'}]},
+    options: {plugins:{legend:{display:false}}},
+  });
+}
+
+async function refreshAll() {
+  loadOverview();
+  loadTokens();
+  loadModels();
+  loadHeatmap();
+  loadTools();
+  loadTopics();
+  loadSimilarity();
+  loadWordcloud();
+  loadLatency();
+}
+
+refreshAll();
+setInterval(refreshAll, 60000);
+</script>
+
+</body>
+</html>
