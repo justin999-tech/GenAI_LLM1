@@ -331,6 +331,160 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def _run_slim_fallback(client, msgs, tool_defs, tool_executor, err_text):
+    """Generator: handle Groq tool_use_failed / rate limit by retrying
+    on a slimmed prompt + relevant tools, with layered model fallback.
+
+    Layered attempts (each gives up if it produces no content):
+      1. 70B with up to 5 relevant tools           (best for tool calling)
+      2. 8B with up to 5 relevant tools             (next-best, higher daily quota)
+      3. 8B no tools                                (last resort, plain reply)
+
+    If ALL three fail (e.g. daily TPD exhausted) but we already collected
+    a tool result, we surface that as the answer so the user sees real data
+    instead of a blank reply.
+
+    Yields SSE event strings.
+    """
+    last_user = next((m for m in reversed(msgs)
+                      if m.get("role") == "user"), None)
+    user_text = (last_user.get("content", "") if last_user else "").lower()
+
+    mem_block = ""
+    orig_system = next((m.get("content", "") for m in msgs
+                        if m.get("role") == "system"), "")
+    if orig_system:
+        marker_idx = orig_system.find("[已知使用者資訊")
+        if marker_idx == -1:
+            marker_idx = orig_system.find("Known User Context")
+        if marker_idx != -1:
+            mem_block = orig_system[marker_idx:].strip()
+
+    slim_tools = _pick_relevant_tools(user_text, tool_defs)
+
+    slim_system = ("You are a concise assistant. Respond in the user's "
+                   "language. Use tools if helpful.")
+    if mem_block:
+        slim_system += "\n\n" + mem_block
+
+    base_msgs = [{"role": "system", "content": slim_system}]
+    if last_user:
+        base_msgs.append({"role": "user",
+                          "content": last_user.get("content", "")})
+
+    reason = "Groq 免費 tier 速率限制" \
+        if "rate_limit" in err_text or "too large" in err_text \
+        else "工具呼叫失敗"
+    tool_note = (f"保留 {len(slim_tools)} 個相關工具"
+                 if slim_tools else "無工具")
+    yield _sse({"type": "tool_call_failed",
+                "message": f"{reason}，啟動 layered fallback（{tool_note}）。"})
+
+    collected_tool_results = []  # [(tool_name, result)]
+
+    # Each attempt gets a fresh copy of base_msgs so tool_call entries from
+    # a previous failed attempt don't leak into the next.
+    attempts = []
+    if slim_tools:
+        attempts.append(("llama-3.3-70b-versatile", True))
+        attempts.append(("llama-3.1-8b-instant", True))
+    attempts.append(("llama-3.1-8b-instant", False))
+
+    produced_content = False
+
+    for (model_id, with_tools) in attempts:
+        if produced_content:
+            break
+        slim_msgs = [dict(m) for m in base_msgs]
+        try:
+            if with_tools and slim_tools:
+                resp = client.chat.completions.create(
+                    model=model_id, messages=slim_msgs,
+                    tools=slim_tools, tool_choice="auto", max_tokens=2048,
+                )
+                msg = resp.choices[0].message
+                if getattr(msg, "tool_calls", None):
+                    slim_msgs.append({
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [{
+                            "id": tc.id, "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        } for tc in msg.tool_calls],
+                    })
+                    for tc in msg.tool_calls:
+                        name = tc.function.name
+                        try:
+                            args = json.loads(tc.function.arguments or "{}")
+                        except Exception:
+                            args = {}
+                        yield _sse({"type": "tool_call", "tool": name,
+                                    "args": args, "id": tc.id})
+                        try:
+                            result = tool_executor(name, args)
+                        except Exception as ex:
+                            result = f"Tool error: {ex}"
+                        if not isinstance(result, str):
+                            result = json.dumps(result, ensure_ascii=False)
+                        yield _sse({"type": "tool_result", "tool": name,
+                                    "result": result, "id": tc.id})
+                        slim_msgs.append({
+                            "role": "tool", "tool_call_id": tc.id,
+                            "content": result[:2000],
+                        })
+                        collected_tool_results.append((name, result))
+                    # Stream the final answer.
+                    try:
+                        final_stream = client.chat.completions.create(
+                            model=model_id, messages=slim_msgs,
+                            max_tokens=2048, stream=True,
+                        )
+                        for chunk in final_stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta.content
+                            if delta:
+                                produced_content = True
+                                yield _sse({"content": delta})
+                    except Exception as ex:
+                        yield _sse({"type": "fallback_warn",
+                                    "message": f"{model_id} 最終回覆失敗: {str(ex)[:160]}"})
+                elif msg.content:
+                    produced_content = True
+                    yield _sse({"content": msg.content})
+            else:
+                stream = client.chat.completions.create(
+                    model=model_id, messages=slim_msgs,
+                    max_tokens=2048, stream=True,
+                )
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        produced_content = True
+                        yield _sse({"content": delta})
+        except Exception as ex:
+            yield _sse({"type": "fallback_warn",
+                        "message": f"{model_id} 嘗試失敗: {str(ex)[:160]}"})
+
+    if not produced_content:
+        if collected_tool_results:
+            lines = ["（Groq 免費額度可能已用完，無法產生最終回覆。"
+                     "以下為工具實際回傳的資料：）", ""]
+            for tname, tresult in collected_tool_results:
+                lines.append(f"**{tname}:** {tresult[:600]}")
+            yield _sse({"content": "\n".join(lines)})
+        else:
+            yield _sse({"content":
+                        "（Groq 免費 tier 今日 token 額度可能已用完。"
+                        "請等到明日重置，或在 🔑 API 加入 Anthropic Claude / "
+                        "OpenAI 等其他 provider 繼續使用。）"})
+
+
 def _build_post_tool_nudge(msgs: List[Dict], force_final: bool = False) -> Dict:
     """A system reminder that pins down trust in tool results — used both
     between rounds and on the final-answer round.
@@ -490,122 +644,8 @@ def agentic_stream(client, messages: List[Dict], model: str,
             # something rather than a hard failure.
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
-                # Slim retry: drop base_behavior + most tool schemas. Keep the
-                # memory block, and KEEP a small subset of tools that look
-                # relevant to the user's query (e.g. weather query → keep
-                # get_weather + web_search). Filtering 23 tools down to 1-3
-                # drops ~10000 tokens, so the request fits under 6000 TPM
-                # AND the model can still call the tool the user actually
-                # needs — instead of "工具不可用".
-                last_user = next((m for m in reversed(msgs)
-                                  if m.get("role") == "user"), None)
-                user_text = (last_user.get("content", "") if last_user else "").lower()
-
-                mem_block = ""
-                orig_system = next((m.get("content", "") for m in msgs
-                                    if m.get("role") == "system"), "")
-                if orig_system:
-                    marker_idx = orig_system.find("[已知使用者資訊")
-                    if marker_idx == -1:
-                        marker_idx = orig_system.find("Known User Context")
-                    if marker_idx != -1:
-                        mem_block = orig_system[marker_idx:].strip()
-
-                # Pick tools relevant to the user's message.
-                slim_tools = _pick_relevant_tools(user_text, tool_defs)
-
-                slim_system = ("You are a concise assistant. Respond in the "
-                               "user's language. Use tools if helpful.")
-                if mem_block:
-                    slim_system += "\n\n" + mem_block
-
-                slim_msgs = [{"role": "system", "content": slim_system}]
-                if last_user:
-                    slim_msgs.append({"role": "user",
-                                      "content": last_user.get("content", "")})
-                # Stay on 70B (better at structured tool calls than 8B) but
-                # with only the relevant tools — total request now ~3000 tokens,
-                # well under 70B's 12000 TPM cap. 8B is unreliable for tools.
-                fallback_model = "llama-3.3-70b-versatile" if slim_tools \
-                                 else "llama-3.1-8b-instant"
-                reason = "Groq 免費 tier 速率限制" \
-                    if "rate_limit" in err_text or "too large" in err_text \
-                    else "工具呼叫失敗"
-                tool_note = (f"保留 {len(slim_tools)} 個相關工具"
-                             if slim_tools else "無工具")
-                yield _sse({"type": "tool_call_failed",
-                            "message": f"{reason}，改用 {fallback_model} 精簡回答（{tool_note}）。"})
-                try:
-                    if slim_tools:
-                        # One round of tool-aware retry.
-                        kwargs = dict(model=fallback_model, messages=slim_msgs,
-                                      tools=slim_tools, tool_choice="auto",
-                                      max_tokens=2048)
-                        resp = client.chat.completions.create(**kwargs)
-                        choice = resp.choices[0]
-                        msg = choice.message
-
-                        if getattr(msg, "tool_calls", None):
-                            slim_msgs.append({
-                                "role": "assistant",
-                                "content": msg.content or "",
-                                "tool_calls": [{
-                                    "id": tc.id, "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                } for tc in msg.tool_calls],
-                            })
-                            for tc in msg.tool_calls:
-                                name = tc.function.name
-                                try:
-                                    args = json.loads(tc.function.arguments or "{}")
-                                except Exception:
-                                    args = {}
-                                yield _sse({"type": "tool_call", "tool": name,
-                                            "args": args, "id": tc.id})
-                                try:
-                                    result = tool_executor(name, args)
-                                except Exception as ex:
-                                    result = f"Tool error: {ex}"
-                                if not isinstance(result, str):
-                                    result = json.dumps(result, ensure_ascii=False)
-                                yield _sse({"type": "tool_result", "tool": name,
-                                            "result": result, "id": tc.id})
-                                slim_msgs.append({
-                                    "role": "tool", "tool_call_id": tc.id,
-                                    "content": result[:2000],
-                                })
-                            # Final answer using tool results.
-                            final_stream = client.chat.completions.create(
-                                model=fallback_model, messages=slim_msgs,
-                                max_tokens=2048, stream=True,
-                            )
-                            for chunk in final_stream:
-                                if not chunk.choices:
-                                    continue
-                                delta = chunk.choices[0].delta.content
-                                if delta:
-                                    yield _sse({"content": delta})
-                        elif msg.content:
-                            # Model answered without calling any tool.
-                            yield _sse({"content": msg.content})
-                    else:
-                        # No relevant tools — plain reply.
-                        slim_stream = client.chat.completions.create(
-                            model=fallback_model, messages=slim_msgs,
-                            max_tokens=2048, stream=True,
-                        )
-                        for chunk in slim_stream:
-                            if not chunk.choices:
-                                continue
-                            delta = chunk.choices[0].delta.content
-                            if delta:
-                                yield _sse({"content": delta})
-                except Exception as e2:
-                    yield _sse({"type": "error",
-                                "message": f"Fallback failed: {e2}"})
+                yield from _run_slim_fallback(client, msgs, tool_defs,
+                                              tool_executor, err_text)
                 return
             yield _sse({"type": "error", "message": f"LLM error: {e}"})
             return
@@ -644,122 +684,8 @@ def agentic_stream(client, messages: List[Dict], model: str,
             # mid-stream. Retry without tools so the user still gets a reply.
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
-                # Slim retry: drop base_behavior + most tool schemas. Keep the
-                # memory block, and KEEP a small subset of tools that look
-                # relevant to the user's query (e.g. weather query → keep
-                # get_weather + web_search). Filtering 23 tools down to 1-3
-                # drops ~10000 tokens, so the request fits under 6000 TPM
-                # AND the model can still call the tool the user actually
-                # needs — instead of "工具不可用".
-                last_user = next((m for m in reversed(msgs)
-                                  if m.get("role") == "user"), None)
-                user_text = (last_user.get("content", "") if last_user else "").lower()
-
-                mem_block = ""
-                orig_system = next((m.get("content", "") for m in msgs
-                                    if m.get("role") == "system"), "")
-                if orig_system:
-                    marker_idx = orig_system.find("[已知使用者資訊")
-                    if marker_idx == -1:
-                        marker_idx = orig_system.find("Known User Context")
-                    if marker_idx != -1:
-                        mem_block = orig_system[marker_idx:].strip()
-
-                # Pick tools relevant to the user's message.
-                slim_tools = _pick_relevant_tools(user_text, tool_defs)
-
-                slim_system = ("You are a concise assistant. Respond in the "
-                               "user's language. Use tools if helpful.")
-                if mem_block:
-                    slim_system += "\n\n" + mem_block
-
-                slim_msgs = [{"role": "system", "content": slim_system}]
-                if last_user:
-                    slim_msgs.append({"role": "user",
-                                      "content": last_user.get("content", "")})
-                # Stay on 70B (better at structured tool calls than 8B) but
-                # with only the relevant tools — total request now ~3000 tokens,
-                # well under 70B's 12000 TPM cap. 8B is unreliable for tools.
-                fallback_model = "llama-3.3-70b-versatile" if slim_tools \
-                                 else "llama-3.1-8b-instant"
-                reason = "Groq 免費 tier 速率限制" \
-                    if "rate_limit" in err_text or "too large" in err_text \
-                    else "工具呼叫失敗"
-                tool_note = (f"保留 {len(slim_tools)} 個相關工具"
-                             if slim_tools else "無工具")
-                yield _sse({"type": "tool_call_failed",
-                            "message": f"{reason}，改用 {fallback_model} 精簡回答（{tool_note}）。"})
-                try:
-                    if slim_tools:
-                        # One round of tool-aware retry.
-                        kwargs = dict(model=fallback_model, messages=slim_msgs,
-                                      tools=slim_tools, tool_choice="auto",
-                                      max_tokens=2048)
-                        resp = client.chat.completions.create(**kwargs)
-                        choice = resp.choices[0]
-                        msg = choice.message
-
-                        if getattr(msg, "tool_calls", None):
-                            slim_msgs.append({
-                                "role": "assistant",
-                                "content": msg.content or "",
-                                "tool_calls": [{
-                                    "id": tc.id, "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                } for tc in msg.tool_calls],
-                            })
-                            for tc in msg.tool_calls:
-                                name = tc.function.name
-                                try:
-                                    args = json.loads(tc.function.arguments or "{}")
-                                except Exception:
-                                    args = {}
-                                yield _sse({"type": "tool_call", "tool": name,
-                                            "args": args, "id": tc.id})
-                                try:
-                                    result = tool_executor(name, args)
-                                except Exception as ex:
-                                    result = f"Tool error: {ex}"
-                                if not isinstance(result, str):
-                                    result = json.dumps(result, ensure_ascii=False)
-                                yield _sse({"type": "tool_result", "tool": name,
-                                            "result": result, "id": tc.id})
-                                slim_msgs.append({
-                                    "role": "tool", "tool_call_id": tc.id,
-                                    "content": result[:2000],
-                                })
-                            # Final answer using tool results.
-                            final_stream = client.chat.completions.create(
-                                model=fallback_model, messages=slim_msgs,
-                                max_tokens=2048, stream=True,
-                            )
-                            for chunk in final_stream:
-                                if not chunk.choices:
-                                    continue
-                                delta = chunk.choices[0].delta.content
-                                if delta:
-                                    yield _sse({"content": delta})
-                        elif msg.content:
-                            # Model answered without calling any tool.
-                            yield _sse({"content": msg.content})
-                    else:
-                        # No relevant tools — plain reply.
-                        slim_stream = client.chat.completions.create(
-                            model=fallback_model, messages=slim_msgs,
-                            max_tokens=2048, stream=True,
-                        )
-                        for chunk in slim_stream:
-                            if not chunk.choices:
-                                continue
-                            delta = chunk.choices[0].delta.content
-                            if delta:
-                                yield _sse({"content": delta})
-                except Exception as e2:
-                    yield _sse({"type": "error",
-                                "message": f"Fallback failed: {e2}"})
+                yield from _run_slim_fallback(client, msgs, tool_defs,
+                                              tool_executor, err_text)
                 return
             yield _sse({"type": "error", "message": f"Stream read error: {e}"})
             return
