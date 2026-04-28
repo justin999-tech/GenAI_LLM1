@@ -174,14 +174,25 @@ def tool_web_search(query: str, num_results: int = 3) -> str:
 
 
 def tool_get_weather(city: str, units: str = "metric") -> str:
-    """Open-Meteo: free weather API, no key needed. Geocodes city first."""
+    """Open-Meteo: free weather API, no key needed. Geocodes city first.
+
+    Tries CJK-aware lookup first (language=zh) so Chinese/Japanese city names
+    like "東京" or "台北" resolve, then falls back to language-agnostic
+    lookup for English names.
+    """
     try:
-        geo_url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
-            {"name": city, "count": 1}
-        )
-        with urllib.request.urlopen(geo_url, timeout=10) as r:
-            geo = json.loads(r.read().decode("utf-8"))
-        results = geo.get("results") or []
+        results = []
+        for lang in ("zh", None):
+            params = {"name": city, "count": 1}
+            if lang:
+                params["language"] = lang
+            geo_url = ("https://geocoding-api.open-meteo.com/v1/search?"
+                       + urllib.parse.urlencode(params))
+            with urllib.request.urlopen(geo_url, timeout=10) as r:
+                geo = json.loads(r.read().decode("utf-8"))
+            results = geo.get("results") or []
+            if results:
+                break
         if not results:
             return f"City not found: {city!r}"
         loc = results[0]
@@ -258,6 +269,60 @@ def _build_full_tool_definitions():
 
 def get_tool_definitions(extended: bool = True):
     return _build_full_tool_definitions() if extended else TOOL_DEFINITIONS
+
+
+# Keyword → tool-name mapping used by the slim fallback to keep only the
+# tools that look relevant to the user's query. Sending 1-3 tool schemas
+# instead of all 23 keeps the request under Groq's 6000 TPM cap on 8B.
+_TOOL_KEYWORDS = {
+    "get_weather":     ["天氣", "weather", "溫度", "下雨", "預報", "氣溫"],
+    "web_search":      ["查詢", "搜尋", "搜", "查", "search", "google", "找",
+                        "天氣", "weather", "新聞", "news"],
+    "calculator":      ["計算", "算", "calculate", "math", "+", "-", "×", "÷",
+                        "*", "/", "²", "立方", "平方", "解", "等於"],
+    "get_datetime":    ["現在", "now", "今天", "today", "幾點", "時間", "date",
+                        "禮拜", "星期"],
+    "stock_price":     ["股價", "股票", "stock", "shares"],
+    "crypto_price":    ["加密", "crypto", "bitcoin", "比特幣", "eth", "btc"],
+    "execute_python":  ["畫", "matplotlib", "plot", "繪製", "計算", "python",
+                        "執行", "run", "正弦", "sin", "cos"],
+    "generate_image":  ["生成", "畫一", "draw", "image", "圖片", "繪圖", "產生圖"],
+    "fetch_url":       ["fetch", "抓", "爬", "網頁", "url", "http"],
+    "github_search_repos": ["github", "repo"],
+    "youtube_transcript":  ["youtube", "字幕", "transcript"],
+    "arxiv_search":    ["arxiv", "論文", "paper"],
+    "wikipedia_search": ["wikipedia", "wiki", "百科"],
+    "notion_search":   ["notion", "搜尋 notion"],
+    "notion_list_pages":   ["notion", "頁面"],
+    "notion_create_page":  ["notion", "建立", "新增頁面"],
+    "notion_append_to_page": ["notion", "append", "附加", "加到"],
+    "notion_query_database": ["notion", "database", "資料庫"],
+}
+
+
+def _pick_relevant_tools(user_text: str, all_tool_defs: list) -> list:
+    """Return the subset of `all_tool_defs` whose name appears relevant to
+    `user_text`. Always returns at most ~5 tools — enough for the model to
+    chain a couple of calls, small enough to fit the TPM budget."""
+    if not user_text:
+        return []
+    txt = user_text.lower()
+    relevant_names = []
+    for name, keywords in _TOOL_KEYWORDS.items():
+        if any(kw in txt for kw in keywords):
+            relevant_names.append(name)
+    if not relevant_names:
+        return []
+    seen = set()
+    out = []
+    for td in all_tool_defs:
+        n = td.get("function", {}).get("name") if isinstance(td, dict) else None
+        if n in relevant_names and n not in seen:
+            seen.add(n)
+            out.append(td)
+        if len(out) >= 5:
+            break
+    return out
 
 
 # ---- Agentic streaming loop ------------------------------------------
@@ -425,14 +490,17 @@ def agentic_stream(client, messages: List[Dict], model: str,
             # something rather than a hard failure.
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
-                # Build a slim retry: drop the giant base_behavior + tool
-                # schemas, but PRESERVE the memory context block — without
-                # it, the model can't answer "what fruit do I like" etc.
-                # Free-tier Groq has 6000-12000 TPM; full request is ~17000.
+                # Slim retry: drop base_behavior + most tool schemas. Keep the
+                # memory block, and KEEP a small subset of tools that look
+                # relevant to the user's query (e.g. weather query → keep
+                # get_weather + web_search). Filtering 23 tools down to 1-3
+                # drops ~10000 tokens, so the request fits under 6000 TPM
+                # AND the model can still call the tool the user actually
+                # needs — instead of "工具不可用".
                 last_user = next((m for m in reversed(msgs)
                                   if m.get("role") == "user"), None)
-                # Pull just the memory block out of the original system prompt
-                # (lines starting with "[已知使用者資訊" or "Known User Context").
+                user_text = (last_user.get("content", "") if last_user else "").lower()
+
                 mem_block = ""
                 orig_system = next((m.get("content", "") for m in msgs
                                     if m.get("role") == "system"), "")
@@ -443,8 +511,11 @@ def agentic_stream(client, messages: List[Dict], model: str,
                     if marker_idx != -1:
                         mem_block = orig_system[marker_idx:].strip()
 
-                slim_system = "Reply concisely in the user's language. " \
-                              "Tools are unavailable in this turn."
+                # Pick tools relevant to the user's message.
+                slim_tools = _pick_relevant_tools(user_text, tool_defs)
+
+                slim_system = ("You are a concise assistant. Respond in the "
+                               "user's language. Use tools if helpful.")
                 if mem_block:
                     slim_system += "\n\n" + mem_block
 
@@ -452,23 +523,86 @@ def agentic_stream(client, messages: List[Dict], model: str,
                 if last_user:
                     slim_msgs.append({"role": "user",
                                       "content": last_user.get("content", "")})
-                fallback_model = "llama-3.1-8b-instant"
+                # Stay on 70B (better at structured tool calls than 8B) but
+                # with only the relevant tools — total request now ~3000 tokens,
+                # well under 70B's 12000 TPM cap. 8B is unreliable for tools.
+                fallback_model = "llama-3.3-70b-versatile" if slim_tools \
+                                 else "llama-3.1-8b-instant"
                 reason = "Groq 免費 tier 速率限制" \
                     if "rate_limit" in err_text or "too large" in err_text \
                     else "工具呼叫失敗"
+                tool_note = (f"保留 {len(slim_tools)} 個相關工具"
+                             if slim_tools else "無工具")
                 yield _sse({"type": "tool_call_failed",
-                            "message": f"{reason}，改用 {fallback_model} 精簡回答。"})
+                            "message": f"{reason}，改用 {fallback_model} 精簡回答（{tool_note}）。"})
                 try:
-                    slim_stream = client.chat.completions.create(
-                        model=fallback_model, messages=slim_msgs,
-                        max_tokens=2048, stream=True,
-                    )
-                    for chunk in slim_stream:
-                        if not chunk.choices:
-                            continue
-                        delta = chunk.choices[0].delta.content
-                        if delta:
-                            yield _sse({"content": delta})
+                    if slim_tools:
+                        # One round of tool-aware retry.
+                        kwargs = dict(model=fallback_model, messages=slim_msgs,
+                                      tools=slim_tools, tool_choice="auto",
+                                      max_tokens=2048)
+                        resp = client.chat.completions.create(**kwargs)
+                        choice = resp.choices[0]
+                        msg = choice.message
+
+                        if getattr(msg, "tool_calls", None):
+                            slim_msgs.append({
+                                "role": "assistant",
+                                "content": msg.content or "",
+                                "tool_calls": [{
+                                    "id": tc.id, "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                } for tc in msg.tool_calls],
+                            })
+                            for tc in msg.tool_calls:
+                                name = tc.function.name
+                                try:
+                                    args = json.loads(tc.function.arguments or "{}")
+                                except Exception:
+                                    args = {}
+                                yield _sse({"type": "tool_call", "tool": name,
+                                            "args": args, "id": tc.id})
+                                try:
+                                    result = tool_executor(name, args)
+                                except Exception as ex:
+                                    result = f"Tool error: {ex}"
+                                if not isinstance(result, str):
+                                    result = json.dumps(result, ensure_ascii=False)
+                                yield _sse({"type": "tool_result", "tool": name,
+                                            "result": result, "id": tc.id})
+                                slim_msgs.append({
+                                    "role": "tool", "tool_call_id": tc.id,
+                                    "content": result[:2000],
+                                })
+                            # Final answer using tool results.
+                            final_stream = client.chat.completions.create(
+                                model=fallback_model, messages=slim_msgs,
+                                max_tokens=2048, stream=True,
+                            )
+                            for chunk in final_stream:
+                                if not chunk.choices:
+                                    continue
+                                delta = chunk.choices[0].delta.content
+                                if delta:
+                                    yield _sse({"content": delta})
+                        elif msg.content:
+                            # Model answered without calling any tool.
+                            yield _sse({"content": msg.content})
+                    else:
+                        # No relevant tools — plain reply.
+                        slim_stream = client.chat.completions.create(
+                            model=fallback_model, messages=slim_msgs,
+                            max_tokens=2048, stream=True,
+                        )
+                        for chunk in slim_stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta.content
+                            if delta:
+                                yield _sse({"content": delta})
                 except Exception as e2:
                     yield _sse({"type": "error",
                                 "message": f"Fallback failed: {e2}"})
@@ -510,14 +644,17 @@ def agentic_stream(client, messages: List[Dict], model: str,
             # mid-stream. Retry without tools so the user still gets a reply.
             if "tool_use_failed" in err_text or "Failed to call a function" in err_text \
                     or "rate_limit_exceeded" in err_text or "Request too large" in err_text:
-                # Build a slim retry: drop the giant base_behavior + tool
-                # schemas, but PRESERVE the memory context block — without
-                # it, the model can't answer "what fruit do I like" etc.
-                # Free-tier Groq has 6000-12000 TPM; full request is ~17000.
+                # Slim retry: drop base_behavior + most tool schemas. Keep the
+                # memory block, and KEEP a small subset of tools that look
+                # relevant to the user's query (e.g. weather query → keep
+                # get_weather + web_search). Filtering 23 tools down to 1-3
+                # drops ~10000 tokens, so the request fits under 6000 TPM
+                # AND the model can still call the tool the user actually
+                # needs — instead of "工具不可用".
                 last_user = next((m for m in reversed(msgs)
                                   if m.get("role") == "user"), None)
-                # Pull just the memory block out of the original system prompt
-                # (lines starting with "[已知使用者資訊" or "Known User Context").
+                user_text = (last_user.get("content", "") if last_user else "").lower()
+
                 mem_block = ""
                 orig_system = next((m.get("content", "") for m in msgs
                                     if m.get("role") == "system"), "")
@@ -528,8 +665,11 @@ def agentic_stream(client, messages: List[Dict], model: str,
                     if marker_idx != -1:
                         mem_block = orig_system[marker_idx:].strip()
 
-                slim_system = "Reply concisely in the user's language. " \
-                              "Tools are unavailable in this turn."
+                # Pick tools relevant to the user's message.
+                slim_tools = _pick_relevant_tools(user_text, tool_defs)
+
+                slim_system = ("You are a concise assistant. Respond in the "
+                               "user's language. Use tools if helpful.")
                 if mem_block:
                     slim_system += "\n\n" + mem_block
 
@@ -537,23 +677,86 @@ def agentic_stream(client, messages: List[Dict], model: str,
                 if last_user:
                     slim_msgs.append({"role": "user",
                                       "content": last_user.get("content", "")})
-                fallback_model = "llama-3.1-8b-instant"
+                # Stay on 70B (better at structured tool calls than 8B) but
+                # with only the relevant tools — total request now ~3000 tokens,
+                # well under 70B's 12000 TPM cap. 8B is unreliable for tools.
+                fallback_model = "llama-3.3-70b-versatile" if slim_tools \
+                                 else "llama-3.1-8b-instant"
                 reason = "Groq 免費 tier 速率限制" \
                     if "rate_limit" in err_text or "too large" in err_text \
                     else "工具呼叫失敗"
+                tool_note = (f"保留 {len(slim_tools)} 個相關工具"
+                             if slim_tools else "無工具")
                 yield _sse({"type": "tool_call_failed",
-                            "message": f"{reason}，改用 {fallback_model} 精簡回答。"})
+                            "message": f"{reason}，改用 {fallback_model} 精簡回答（{tool_note}）。"})
                 try:
-                    slim_stream = client.chat.completions.create(
-                        model=fallback_model, messages=slim_msgs,
-                        max_tokens=2048, stream=True,
-                    )
-                    for chunk in slim_stream:
-                        if not chunk.choices:
-                            continue
-                        delta = chunk.choices[0].delta.content
-                        if delta:
-                            yield _sse({"content": delta})
+                    if slim_tools:
+                        # One round of tool-aware retry.
+                        kwargs = dict(model=fallback_model, messages=slim_msgs,
+                                      tools=slim_tools, tool_choice="auto",
+                                      max_tokens=2048)
+                        resp = client.chat.completions.create(**kwargs)
+                        choice = resp.choices[0]
+                        msg = choice.message
+
+                        if getattr(msg, "tool_calls", None):
+                            slim_msgs.append({
+                                "role": "assistant",
+                                "content": msg.content or "",
+                                "tool_calls": [{
+                                    "id": tc.id, "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                } for tc in msg.tool_calls],
+                            })
+                            for tc in msg.tool_calls:
+                                name = tc.function.name
+                                try:
+                                    args = json.loads(tc.function.arguments or "{}")
+                                except Exception:
+                                    args = {}
+                                yield _sse({"type": "tool_call", "tool": name,
+                                            "args": args, "id": tc.id})
+                                try:
+                                    result = tool_executor(name, args)
+                                except Exception as ex:
+                                    result = f"Tool error: {ex}"
+                                if not isinstance(result, str):
+                                    result = json.dumps(result, ensure_ascii=False)
+                                yield _sse({"type": "tool_result", "tool": name,
+                                            "result": result, "id": tc.id})
+                                slim_msgs.append({
+                                    "role": "tool", "tool_call_id": tc.id,
+                                    "content": result[:2000],
+                                })
+                            # Final answer using tool results.
+                            final_stream = client.chat.completions.create(
+                                model=fallback_model, messages=slim_msgs,
+                                max_tokens=2048, stream=True,
+                            )
+                            for chunk in final_stream:
+                                if not chunk.choices:
+                                    continue
+                                delta = chunk.choices[0].delta.content
+                                if delta:
+                                    yield _sse({"content": delta})
+                        elif msg.content:
+                            # Model answered without calling any tool.
+                            yield _sse({"content": msg.content})
+                    else:
+                        # No relevant tools — plain reply.
+                        slim_stream = client.chat.completions.create(
+                            model=fallback_model, messages=slim_msgs,
+                            max_tokens=2048, stream=True,
+                        )
+                        for chunk in slim_stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta.content
+                            if delta:
+                                yield _sse({"content": delta})
                 except Exception as e2:
                     yield _sse({"type": "error",
                                 "message": f"Fallback failed: {e2}"})

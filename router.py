@@ -19,6 +19,32 @@ _FAST_PATTERNS = [
     r"^(ok|okay|好|是|對|不|沒有|謝謝|thanks)\b",
     r"^(yes|no|yep|nope)$",
 ]
+
+# Keywords that strongly imply a tool call. We do NOT route these to 8B
+# because 8B's 6000 TPM cap can't fit the full 23-tool schema (~12 KB)
+# plus the system prompt, so the tools-enabled request gets rejected
+# and the slim fallback strips tools — the user then sees "工具不可用".
+# Sending tool-likely queries to 70B (12000 TPM) gives much more headroom.
+_TOOL_PATTERNS = [
+    # Web / search
+    r"(查詢|查|查一下|搜尋|搜|google|search|找|找一下|看看)",
+    # Weather
+    r"(天氣|weather|溫度|下雨|預報)",
+    # Stock / crypto / finance
+    r"(股價|股票|stock|crypto|比特幣|bitcoin|加密|匯率)",
+    # Image generation
+    r"(畫一(個|張|幅)|生成.{0,8}(圖|圖片|image)|產生.{0,8}圖|draw|generate.*image)",
+    # Code execution / matplotlib
+    r"(matplotlib|畫圖|plot|繪製|執行|run.*code|計算)",
+    # Notion / files
+    r"(notion|notion 頁面|append|append.*page|寫入.*notion)",
+    # Academic
+    r"(arxiv|wikipedia|wiki|論文|paper)",
+    # GitHub / web
+    r"(github|repo|repository|youtube|抓取網頁|爬|fetch)",
+    # Time / date
+    r"(現在(幾點|時間)|今天.*日期|目前時間|today.*date)",
+]
 _CODE_PATTERNS = [
     r"```",
     r"\bdef\s+\w+\(",
@@ -73,6 +99,11 @@ def route(message: str,
     for pat in _FAST_PATTERNS:
         if re.search(pat, lower, re.IGNORECASE):
             return {"model": FAST_MODEL, "reason": "簡短問候 → 快速模型 8B"}
+
+    # Tool-likely queries always go to 70B — 8B's TPM can't fit tool schemas.
+    for pat in _TOOL_PATTERNS:
+        if re.search(pat, msg, re.IGNORECASE):
+            return {"model": DEFAULT_MODEL, "reason": "需要工具呼叫 → 70B"}
 
     if len(msg) < 25 and "?" not in msg and "？" not in msg:
         return {"model": FAST_MODEL, "reason": "短訊息 → 快速模型 8B"}
