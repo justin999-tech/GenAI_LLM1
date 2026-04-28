@@ -8,11 +8,12 @@
 
 /* ════════════════ TOKENS ════════════════ */
 :root {
-    /* Vibrant gradient backdrop (purple → pink → orange) */
-    --bg-grad-1:  #6b3df0;
-    --bg-grad-2:  #d946ef;
-    --bg-grad-3:  #fb923c;
-    --bg-grad-4:  #f59e0b;
+    /* Soft, muted gradient backdrop — Vision Pro "dusk" tones.
+       Desaturated on purpose so light/white icons remain visible. */
+    --bg-grad-1:  #4a4060;   /* muted indigo  */
+    --bg-grad-2:  #6e5a7e;   /* dusty plum    */
+    --bg-grad-3:  #a08374;   /* warm taupe    */
+    --bg-grad-4:  #9c8a72;   /* soft sand     */
 
     /* Glass panel tints — semi-transparent white over the gradient */
     --bg:           transparent;
@@ -61,10 +62,10 @@
 /* ════════════════ DARK MODE ════════════════ */
 /* Same glass language, just deeper backdrop */
 body.dark {
-    --bg-grad-1:  #1e1b4b;
-    --bg-grad-2:  #6b21a8;
-    --bg-grad-3:  #be185d;
-    --bg-grad-4:  #9f1239;
+    --bg-grad-1:  #1a1830;   /* near-black indigo */
+    --bg-grad-2:  #2c2541;   /* deep plum         */
+    --bg-grad-3:  #40342f;   /* charcoal espresso */
+    --bg-grad-4:  #2a2520;   /* deep walnut       */
 
     --sidebar:      rgba(255, 255, 255, 0.06);
     --surface:      rgba(255, 255, 255, 0.05);
@@ -137,8 +138,8 @@ body::after {
     content: "";
     position: fixed;
     border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.55;
+    filter: blur(100px);
+    opacity: 0.30;
     pointer-events: none;
     z-index: 0;
     will-change: transform;
@@ -152,7 +153,7 @@ body::before {
 body::after {
     width: 600px; height: 600px;
     bottom: -160px; right: -120px;
-    background: radial-gradient(circle, var(--bg-grad-4) 0%, transparent 70%);
+    background: radial-gradient(circle, var(--bg-grad-3) 0%, transparent 70%);
     animation: drift2 28s ease-in-out infinite alternate;
 }
 @keyframes drift1 {
